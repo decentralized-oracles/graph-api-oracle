@@ -1,0 +1,24 @@
+{
+  "name": "lensapi-oracle-consumer-contract",
+  "version": "0.0.1",
+  "main": "index.js",
+  "license": "MIT",
+  "scripts": {
+    "build-function": "phat-fn build src/index.ts",
+    "run-function": "phat-fn run dist/index.js"
+  },
+  "devDependencies": {
+    "@ethersproject/abi": "^5.4.7",
+    "@ethersproject/providers": "^5.4.7",
+    "@types/node": ">=12.0.0",
+    "ts-node": ">=8.0.0",
+    "typechain": "^8.1.0",
+    "typescript": "^5.2.2"
+  },
+  "dependencies": {
+    "@phala/fn": "^0.1.12",
+    "@phala/pink-env": "^1.0.10",
+    "@phala/sdk": "^0.5.3-nightly-20231012",
+    "dotenv": "^16.0.3"
+  }
+}
