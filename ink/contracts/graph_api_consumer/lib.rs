@@ -4,12 +4,13 @@
 #[openbrush::contract]
 pub mod graph_api_consumer {
     use ink::codegen::{EmitEvent, Env};
-    use ink::env::hash::{Blake2x256, HashOutput};
+    use ink::prelude::string::{String, ToString};
     use ink::prelude::vec::Vec;
     use ink::storage::{Lazy, Mapping};
     use openbrush::contracts::access_control::*;
     use openbrush::contracts::ownable::*;
     use openbrush::traits::Storage;
+
     use scale::{Decode, Encode};
 
     use phat_rollup_anchor_ink::traits::{
@@ -19,30 +20,24 @@ pub mod graph_api_consumer {
     type CodeHash = [u8; 32];
     pub const MANAGER_ROLE: RoleType = ink::selector_id!("MANAGER_ROLE");
 
-    /// Events emitted when a random value is requested
+    pub type DappId = String;
+
+    /// Events emitted when a value is requested
     #[ink(event)]
-    pub struct RandomValueRequested {
-        /// id of the requestor
-        requestor_id: AccountId,
-        /// nonce of the requestor
-        requestor_nonce: u128,
-        /// minimum value requested
-        min: u128,
-        /// maximum value requested
-        max: u128,
+    pub struct ValueRequested {
+        /// dApp id requested
+        dapp_id: DappId,
         /// when the value has been requested
         timestamp: u64,
     }
 
-    /// Events emitted when a random value is received
+    /// Events emitted when a value is received
     #[ink(event)]
-    pub struct RandomValueReceived {
-        /// id of the requestor
-        requestor_id: AccountId,
-        /// nonce of the requestor
-        requestor_nonce: u128,
-        /// random_value
-        random_value: u128,
+    pub struct ValueReceived {
+        /// dApp id requested
+        dapp_id: DappId,
+        /// response value
+        response_value: DappStats,
         /// when the value has been received
         timestamp: u64,
     }
@@ -50,10 +45,8 @@ pub mod graph_api_consumer {
     /// Events emitted when an error is received
     #[ink(event)]
     pub struct ErrorReceived {
-        /// id of the requestor
-        requestor_id: AccountId,
-        /// nonce of the requestor
-        requestor_nonce: u128,
+        /// dApp id requested
+        dapp_id: DappId,
         /// error number
         err_no: Vec<u8>,
         /// when the error has been received
@@ -68,7 +61,6 @@ pub mod graph_api_consumer {
         RollupAnchorError(RollupAnchorError),
         MetaTransactionError(MetaTransactionError),
         FailedToDecode,
-        IncorrectMinMaxValues,
     }
 
     /// convertor from MessageQueueError to ContractError
@@ -93,36 +85,56 @@ pub mod graph_api_consumer {
     /// Type of response when the offchain rollup communicates with this contract
     const TYPE_ERROR: u8 = 0;
     const TYPE_RESPONSE: u8 = 10;
+    const TYPE_FEED: u8 = 11;
 
-    /// Message to request the random value
+    /// Message to request the data
     /// message pushed in the queue by the Ink! smart contract and read by the offchain rollup
     #[derive(Eq, PartialEq, Clone, scale::Encode, scale::Decode)]
-    struct RandomValueRequestMessage {
-        /// id of the requestor
-        requestor_id: AccountId,
-        /// nonce of the requestor
-        requestor_nonce: u128,
-        /// minimum value requested
-        min: u128,
-        /// maximum value requested
-        max: u128,
+    struct GraphApiRequestMessage {
+        /// id of the dapp
+        dapp_id: DappId,
     }
-    /// Message sent to provide a random value
+    /// Message sent to provide the data
     /// response pushed in the queue by the offchain rollup and read by the Ink! smart contract
     #[derive(Encode, Decode)]
-    struct RandomValueResponseMessage {
+    struct GraphApiResponseMessage {
         /// Type of response
         resp_type: u8,
-        /// initial request
-        request: RandomValueRequestMessage,
-        /// hash of js script executed to calculate the random value
+        /// id of the dapp
+        dapp_id: DappId,
+        /// hash of js script executed to get the data
         js_script_hash: Option<CodeHash>,
-        /// random_value
-        random_value: Option<u128>,
+        /// response value
+        response_value: Option<DappStats>,
         /// when an error occurs
         error: Option<Vec<u8>>,
     }
 
+    #[derive(Encode, Decode, Default, Eq, PartialEq, Clone, Debug)]
+    #[cfg_attr(
+        feature = "std",
+        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+    )]
+    pub struct DappStats {
+        developer_address: String,
+        nb_stakers: String,
+        total_stake: String,
+    }
+
+    /// Data storage
+    #[derive(Encode, Decode, Default, Eq, PartialEq, Clone, Debug)]
+    #[cfg_attr(
+        feature = "std",
+        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+    )]
+    pub struct DappData {
+        /// id of the dApp
+        dapp_id: DappId,
+        /// stats of the dApp
+        dapp_stats: DappStats,
+        /// when the last value has been updated
+        last_update: u64,
+    }
 
     #[ink(storage)]
     #[derive(Default, Storage)]
@@ -135,16 +147,10 @@ pub mod graph_api_consumer {
         rollup_anchor: rollup_anchor::Data,
         #[storage_field]
         meta_transaction: meta_transaction::Data,
-        /// Nonce of the requestor.
-        requestor_nonces: Mapping<AccountId, Nonce>,
-        /// hash of the request by (requestor,nonce)
-        hash_requests: Mapping<(AccountId, Nonce), Hash>,
-        /// last random values by requestor
-        /// The key contains the requestor address
-        /// the value contains the tuple (timestamp, random_value)
-        last_values: Mapping<AccountId, (u64, u128)>,
-        /// hash of js script executed to calculate the random value
+        /// hash of js script executed to query the data
         js_script_hash: Lazy<CodeHash>,
+        /// data linked to the dApps
+        dapps_data: Mapping<DappId, DappData>,
     }
 
     impl GraphApiOracleClient {
@@ -163,66 +169,23 @@ pub mod graph_api_consumer {
         }
 
         #[ink(message)]
-        #[openbrush::modifiers(access_control::only_role(MANAGER_ROLE))]
-        pub fn get_requestor_nonce(
-            &mut self,
-            requestor: AccountId,
-        ) -> Result<Nonce, ContractError> {
-            let nonce = self.requestor_nonces.get(requestor).unwrap_or(0);
-            Ok(nonce)
+        pub fn get_dapp_data(&self, dapp_id: DappId) -> Option<DappData> {
+            self.dapps_data.get(dapp_id)
         }
 
-        #[ink(message)]
-        pub fn get_last_value(&mut self) -> Result<Option<(u64, u128)>, ContractError> {
-            let requestor = self.env().caller();
-            let value = self.last_values.get(requestor);
-            Ok(value)
-        }
 
         #[ink(message)]
-        pub fn request_random_value(
-            &mut self,
-            min: u128,
-            max: u128,
-        ) -> Result<QueueIndex, ContractError> {
-
-            if min > max {
-                return Err(ContractError::IncorrectMinMaxValues);
-            }
-
-            let requestor_id = self.env().caller();
-            // get the current nonce
-            let requestor_nonce = self.requestor_nonces.get(requestor_id).unwrap_or(0);
-            // increment the nonce
-            let requestor_nonce = requestor_nonce + 1;
+        pub fn request_dapp_data(&mut self, dapp_id: DappId) -> Result<QueueIndex, ContractError> {
 
             // push the message in the queue
-            let message = RandomValueRequestMessage {
-                requestor_id,
-                requestor_nonce,
-                min,
-                max,
+            let message = GraphApiRequestMessage {
+                dapp_id: dapp_id.to_string(),
             };
             let message_id = self.push_message(&message)?;
 
-            // hash the message
-            let mut hash = <Blake2x256 as HashOutput>::Type::default();
-            ink::env::hash_encoded::<Blake2x256, _>(&message, &mut hash);
-            // save the hash
-            let hash: Hash = hash.into();
-            self.hash_requests
-                .insert((requestor_id, &requestor_nonce), &hash);
-
-            // update the nonce
-            self.requestor_nonces
-                .insert(requestor_id, &requestor_nonce);
-
             // emmit te event
-            self.env().emit_event(RandomValueRequested {
-                requestor_id,
-                requestor_nonce,
-                min,
-                max,
+            self.env().emit_event(ValueRequested {
+                dapp_id,
                 timestamp: self.env().block_timestamp(),
             });
 
@@ -247,7 +210,10 @@ pub mod graph_api_consumer {
 
         #[ink(message)]
         #[openbrush::modifiers(access_control::only_role(MANAGER_ROLE))]
-        pub fn set_js_script_hash(&mut self, js_script_hash: CodeHash) -> Result<(), ContractError> {
+        pub fn set_js_script_hash(
+            &mut self,
+            js_script_hash: CodeHash,
+        ) -> Result<(), ContractError> {
             self.js_script_hash.set(&js_script_hash);
             Ok(())
         }
@@ -256,7 +222,6 @@ pub mod graph_api_consumer {
         pub fn get_js_script_hash(&self) -> Option<CodeHash> {
             self.js_script_hash.get()
         }
-
     }
 
     impl RollupAnchor for GraphApiOracleClient {}
@@ -265,27 +230,8 @@ pub mod graph_api_consumer {
     impl rollup_anchor::MessageHandler for GraphApiOracleClient {
         fn on_message_received(&mut self, action: Vec<u8>) -> Result<(), RollupAnchorError> {
             // parse the response
-            let message: RandomValueResponseMessage =
+            let message: GraphApiResponseMessage =
                 Decode::decode(&mut &action[..]).or(Err(RollupAnchorError::FailedToDecode))?;
-
-            let requestor_id = message.request.requestor_id;
-            let requestor_nonce = message.request.requestor_nonce;
-
-            // hash the message
-            let mut hash = <Blake2x256 as HashOutput>::Type::default();
-            ink::env::hash_encoded::<Blake2x256, _>(&message.request, &mut hash);
-            let hash: Hash = hash.into();
-            let expected_hash = self
-                .hash_requests
-                .get((requestor_id, &requestor_nonce))
-                .ok_or(RollupAnchorError::ConditionNotMet)?; // improve the error
-
-            // check the hash
-            if hash != expected_hash {
-                return Err(RollupAnchorError::ConditionNotMet); // improve the error
-            }
-            // remove the ongoing hash
-            self.hash_requests.remove((requestor_id, &requestor_nonce));
 
             // check the js code hash
             let expected_js_hash = self
@@ -296,36 +242,49 @@ pub mod graph_api_consumer {
             let used_js_hash = message
                 .js_script_hash
                 .ok_or(RollupAnchorError::ConditionNotMet)?; // improve the error
-            // check the js code hash
+                                                             // check the js code hash
             if used_js_hash != expected_js_hash {
                 return Err(RollupAnchorError::ConditionNotMet); // improve the error
             }
 
             let timestamp = self.env().block_timestamp();
 
+            let dapp_id = message.dapp_id;
+
             // handle the response
-            if message.resp_type == TYPE_RESPONSE {
-                // we received the random value
-                // TODO check if the random value is right
-                let random_value = message
-                    .random_value
+            if message.resp_type == TYPE_FEED || message.resp_type == TYPE_RESPONSE {
+                // we received the data
+                let dapp_stats = message
+                    .response_value
                     .ok_or(RollupAnchorError::FailedToDecode)?;
 
+                let dapp_data = DappData {
+                    dapp_id: dapp_id.to_string(),
+                    dapp_stats: DappStats {
+                        total_stake: dapp_stats.total_stake.to_string(),
+                        nb_stakers: dapp_stats.nb_stakers.to_string(),
+                        developer_address: dapp_stats.developer_address.to_string(),
+                    },
+                    last_update: timestamp,
+                };
+
                 // register the info
-                self.last_values.insert(requestor_id, &(timestamp, random_value));
+                self.dapps_data.insert(dapp_id.to_string(), &dapp_data);
 
                 // emmit te event
-                self.env().emit_event(RandomValueReceived {
-                    requestor_id,
-                    requestor_nonce,
-                    random_value,
+                self.env().emit_event(ValueReceived {
+                    dapp_id,
+                    response_value: DappStats {
+                        total_stake: dapp_stats.total_stake,
+                        nb_stakers: dapp_stats.nb_stakers,
+                        developer_address: dapp_stats.developer_address,
+                    },
                     timestamp,
                 });
             } else if message.resp_type == TYPE_ERROR {
                 // we received an error
                 self.env().emit_event(ErrorReceived {
-                    requestor_id,
-                    requestor_nonce,
+                    dapp_id,
                     err_no: message.error.unwrap_or_default(),
                     timestamp,
                 });
@@ -392,7 +351,13 @@ pub mod graph_api_consumer {
         ) -> AccountId {
             let constructor = GraphApiOracleClientRef::new();
             client
-                .instantiate("graph_api_consumer", &ink_e2e::alice(), constructor, 0, None)
+                .instantiate(
+                    "graph_api_consumer",
+                    &ink_e2e::alice(),
+                    constructor,
+                    0,
+                    None,
+                )
                 .await
                 .expect("instantiate failed")
                 .account_id
@@ -425,27 +390,8 @@ pub mod graph_api_consumer {
                 .expect("grant bob as attestor failed");
         }
 
-
         #[ink_e2e::test]
-        async fn test_incorrect_min_max_values(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-            // given
-            let contract_id = alice_instantiates_contract(&mut client).await;
-
-            // a price request is sent but min > max
-            let request_random_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.request_random_value(1000_u128, 100_u128));
-            let result = client
-                .call(&ink_e2e::charlie(), request_random_value, 0, None)
-                .await;
-
-            assert!(result.is_err());
-
-            Ok(())
-
-        }
-
-        #[ink_e2e::test]
-        async fn test_receive_reply(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
+        async fn test_receive_feed(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
             // given
             let contract_id = alice_instantiates_contract(&mut client).await;
 
@@ -455,372 +401,47 @@ pub mod graph_api_consumer {
             // bob is granted as attestor
             alice_grants_bob_as_attestor(&mut client, &contract_id).await;
 
-            // a price request is sent
-            let request_random_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.request_random_value(100_u128, 1000_u128));
-            let result = client
-                .call(&ink_e2e::charlie(), request_random_value, 0, None)
-                .await
-                .expect("Request price should be sent");
-            // event MessageQueued
-            assert!(result.contains_event("Contracts", "ContractEmitted"));
+            let dapp_id = "zsv1gvepvmwfdshmwgczs4zyvmmwesbjwqjn4wdpuefrrpy".to_string();
+            let developer_address = "zsv1gvepvmwfdshmwgczs4zyvmmwesbjwqjn4wdpuefrrpy".to_string();
+            let nb_stakers = "82".to_string();
+            let total_stake = "999999999999999999999999999999999".to_string();
 
-            let request_id = result.return_value().expect("Request id not found");
-
-            // then a response is received
-            let random_value = Some(131_u128);
-            let payload = RandomValueResponseMessage {
-                resp_type: TYPE_RESPONSE,
-                request: RandomValueRequestMessage {
-                    requestor_id: ink::primitives::AccountId::from(
-                        ink_e2e::charlie().public_key().0,
-                    ),
-                    requestor_nonce: 1,
-                    min: 100_u128,
-                    max: 1000_u128,
-                },
+            // data is received
+            let stats = DappStats {
+                developer_address: developer_address.to_string(),
+                nb_stakers: nb_stakers.to_string(),
+                total_stake: total_stake.to_string(),
+            };
+            let payload = GraphApiResponseMessage {
+                resp_type: TYPE_FEED,
+                dapp_id: dapp_id.to_string(),
                 js_script_hash: Some([1u8; 32]),
-                random_value,
+                response_value: Some(stats),
                 error: None,
             };
-            let actions = vec![
-                HandleActionInput::Reply(payload.encode()),
-                HandleActionInput::SetQueueHead(request_id + 1),
-            ];
+            let actions = vec![HandleActionInput::Reply(payload.encode())];
             let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
                 .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
             let result = client
                 .call(&ink_e2e::bob(), rollup_cond_eq, 0, None)
                 .await
                 .expect("rollup cond eq should be ok");
-            // two events : MessageProcessedTo and RandomValueReceived
+            // two events : MessageProcessedTo and ValueReceived
             assert!(result.contains_event("Contracts", "ContractEmitted"));
 
-            // and check if the random value is filled
-            let get_last_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.get_last_value());
+            // and check if the data is filled
+            let get_dapp_data = build_message::<GraphApiOracleClientRef>(contract_id.clone())
+                .call(|oracle| oracle.get_dapp_data(dapp_id.to_string()));
             let get_res = client
-                .call_dry_run(&ink_e2e::charlie(), &get_last_value, 0, None)
+                .call_dry_run(&ink_e2e::charlie(), &get_dapp_data, 0, None)
                 .await;
-            let last_value = get_res.return_value().expect("Last value not found");
+            let dapp_data = get_res.return_value().expect("Dapp data not found");
 
-            assert_eq!(last_value.unwrap().1, 131);
-
-            // reply in the future should fail
-            let actions = vec![
-                HandleActionInput::Reply(payload.encode()),
-                HandleActionInput::SetQueueHead(request_id + 2),
-            ];
-            let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
-            let result = client.call(&ink_e2e::bob(), rollup_cond_eq, 0, None).await;
-            assert!(
-                result.is_err(),
-                "Rollup should fail because we try to pop in the future"
-            );
-
-            // reply in the past should fail
-            let actions = vec![
-                HandleActionInput::Reply(payload.encode()),
-                HandleActionInput::SetQueueHead(request_id),
-            ];
-            let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
-            let result = client.call(&ink_e2e::bob(), rollup_cond_eq, 0, None).await;
-            assert!(
-                result.is_err(),
-                "Rollup should fail because we try to pop in the past"
-            );
-
-            Ok(())
-        }
-
-        #[ink_e2e::test]
-        async fn test_many_sequential_requests_replies(
-            mut client: ink_e2e::Client<C, E>,
-        ) -> E2EResult<()> {
-            // given
-            let contract_id = alice_instantiates_contract(&mut client).await;
-
-            // set the js code hash
-            alice_set_js_script_hash(&mut client, &contract_id).await;
-
-            // bob is granted as attestor
-            alice_grants_bob_as_attestor(&mut client, &contract_id).await;
-
-            // a request is sent
-            let request_random_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.request_random_value(0_u128, 1000000000_u128));
-            let result = client
-                .call(&ink_e2e::charlie(), request_random_value, 0, None)
-                .await
-                .expect("Request random value should be sent");
-            // event MessageQueued
-            assert!(result.contains_event("Contracts", "ContractEmitted"));
-
-            let request_id = result.return_value().expect("Request id not found");
-
-            // then a response is received
-            let random_value = Some(131_u128);
-            let payload = RandomValueResponseMessage {
-                resp_type: TYPE_RESPONSE,
-                request: RandomValueRequestMessage {
-                    requestor_id: ink::primitives::AccountId::from(
-                        ink_e2e::charlie().public_key().0,
-                    ),
-                    requestor_nonce: 1,
-                    min: 0_u128,
-                    max: 1000000000_u128,
-                },
-                js_script_hash: Some([1u8; 32]),
-                random_value,
-                error: None,
-            };
-            let actions = vec![
-                HandleActionInput::Reply(payload.encode()),
-                HandleActionInput::SetQueueHead(request_id + 1),
-            ];
-            let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
-            let result = client
-                .call(&ink_e2e::bob(), rollup_cond_eq, 0, None)
-                .await
-                .expect("rollup cond eq should be ok");
-            // two events : MessageProcessedTo and RandomValueReceived
-            assert!(result.contains_event("Contracts", "ContractEmitted"));
-
-            // and check if the random value is filled
-            let get_last_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.get_last_value());
-            let get_res = client
-                .call_dry_run(&ink_e2e::charlie(), &get_last_value, 0, None)
-                .await;
-            let last_value = get_res.return_value().expect("Last value not found");
-
-            assert_eq!(last_value.unwrap().1, 131);
-
-            // another request is sent
-            let request_random_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.request_random_value(50_u128, 100_u128));
-            let result = client
-                .call(&ink_e2e::charlie(), request_random_value, 0, None)
-                .await
-                .expect("Request random value should be sent");
-            // event MessageQueued
-            assert!(result.contains_event("Contracts", "ContractEmitted"));
-
-            let request_id = result.return_value().expect("Request id not found");
-
-            // another response is received
-            let random_value = Some(75_u128);
-            let payload = RandomValueResponseMessage {
-                resp_type: TYPE_RESPONSE,
-                request: RandomValueRequestMessage {
-                    requestor_id: ink::primitives::AccountId::from(
-                        ink_e2e::charlie().public_key().0,
-                    ),
-                    requestor_nonce: 2,
-                    min: 50_u128,
-                    max: 100_u128,
-                },
-                js_script_hash: Some([1u8; 32]),
-                random_value,
-                error: None,
-            };
-            let actions = vec![
-                HandleActionInput::Reply(payload.encode()),
-                HandleActionInput::SetQueueHead(request_id + 1),
-            ];
-            let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
-            let result = client
-                .call(&ink_e2e::bob(), rollup_cond_eq, 0, None)
-                .await
-                .expect("rollup cond eq should be ok");
-            // two events : MessageProcessedTo and RandomValueReceived
-            assert!(result.contains_event("Contracts", "ContractEmitted"));
-
-            // and check if the random value is filled
-            let get_last_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.get_last_value());
-            let get_res = client
-                .call_dry_run(&ink_e2e::charlie(), &get_last_value, 0, None)
-                .await;
-            let last_value = get_res.return_value().expect("Last value not found");
-
-            assert_eq!(last_value.unwrap().1, 75);
-
-            Ok(())
-        }
-
-        #[ink_e2e::test]
-        async fn test_concurrent_requests_replies(
-            mut client: ink_e2e::Client<C, E>,
-        ) -> E2EResult<()> {
-            // given
-            let contract_id = alice_instantiates_contract(&mut client).await;
-
-            // set the js code hash
-            alice_set_js_script_hash(&mut client, &contract_id).await;
-
-            // bob is granted as attestor
-            alice_grants_bob_as_attestor(&mut client, &contract_id).await;
-
-            // a first request is sent
-            let request_random_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.request_random_value(0_u128, 1000000000_u128));
-            let result = client
-                .call(&ink_e2e::charlie(), request_random_value, 0, None)
-                .await
-                .expect("Request random value should be sent");
-            // event MessageQueued
-            assert!(result.contains_event("Contracts", "ContractEmitted"));
-
-            let request_id_1 = result.return_value().expect("Request id not found");
-
-            // another request is sent
-            let request_random_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.request_random_value(0_u128, 50_u128));
-            let result = client
-                .call(&ink_e2e::charlie(), request_random_value, 0, None)
-                .await
-                .expect("Request random value should be sent");
-            // event MessageQueued
-            assert!(result.contains_event("Contracts", "ContractEmitted"));
-
-            let request_id_2 = result.return_value().expect("Request id not found");
-
-            // then a response is received
-            let random_value = Some(131_u128);
-            let payload = RandomValueResponseMessage {
-                resp_type: TYPE_RESPONSE,
-                request: RandomValueRequestMessage {
-                    requestor_id: ink::primitives::AccountId::from(
-                        ink_e2e::charlie().public_key().0,
-                    ),
-                    requestor_nonce: 1,
-                    min: 0_u128,
-                    max: 1000000000_u128,
-                },
-                js_script_hash: Some([1u8; 32]),
-                random_value,
-                error: None,
-            };
-            let actions = vec![
-                HandleActionInput::Reply(payload.encode()),
-                HandleActionInput::SetQueueHead(request_id_1 + 1),
-            ];
-            let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
-            let result = client
-                .call(&ink_e2e::bob(), rollup_cond_eq, 0, None)
-                .await
-                .expect("rollup cond eq should be ok");
-            // two events : MessageProcessedTo and RandomValueReceived
-            assert!(result.contains_event("Contracts", "ContractEmitted"));
-
-            // and check if the random value is filled
-            let get_last_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.get_last_value());
-            let get_res = client
-                .call_dry_run(&ink_e2e::charlie(), &get_last_value, 0, None)
-                .await;
-            let last_value = get_res.return_value().expect("Last value not found");
-
-            assert_eq!(last_value.unwrap().1, 131);
-
-            // another response is received
-            let random_value = Some(25_u128);
-            let payload = RandomValueResponseMessage {
-                resp_type: TYPE_RESPONSE,
-                request: RandomValueRequestMessage {
-                    requestor_id: ink::primitives::AccountId::from(
-                        ink_e2e::charlie().public_key().0,
-                    ),
-                    requestor_nonce: 2,
-                    min: 0_u128,
-                    max: 50_u128,
-                },
-                js_script_hash: Some([1u8; 32]),
-                random_value,
-                error: None,
-            };
-            let actions = vec![
-                HandleActionInput::Reply(payload.encode()),
-                HandleActionInput::SetQueueHead(request_id_2 + 1),
-            ];
-            let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
-            let result = client
-                .call(&ink_e2e::bob(), rollup_cond_eq, 0, None)
-                .await
-                .expect("rollup cond eq should be ok");
-            // two events : MessageProcessedTo and RandomValueReceived
-            assert!(result.contains_event("Contracts", "ContractEmitted"));
-
-            // and check if the random value is filled
-            let get_last_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.get_last_value());
-            let get_res = client
-                .call_dry_run(&ink_e2e::charlie(), &get_last_value, 0, None)
-                .await;
-            let last_value = get_res.return_value().expect("Last value not found");
-
-            assert_eq!(last_value.unwrap().1, 25);
-
-            Ok(())
-        }
-
-        #[ink_e2e::test]
-        async fn test_bad_hash(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-            // given
-            let contract_id = alice_instantiates_contract(&mut client).await;
-
-            // set the js code hash
-            alice_set_js_script_hash(&mut client, &contract_id).await;
-
-            // bob is granted as attestor
-            alice_grants_bob_as_attestor(&mut client, &contract_id).await;
-
-            // a request is sent
-            let request_random_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.request_random_value(0_u128, 1000000000_u128));
-            let result = client
-                .call(&ink_e2e::charlie(), request_random_value, 0, None)
-                .await
-                .expect("Request random value should be sent");
-            // event MessageQueued
-            assert!(result.contains_event("Contracts", "ContractEmitted"));
-
-            let request_id = result.return_value().expect("Request id not found");
-
-            // then a response is received
-            let random_value = Some(51_u128);
-            let payload = RandomValueResponseMessage {
-                resp_type: TYPE_RESPONSE,
-                request: RandomValueRequestMessage {
-                    requestor_id: ink::primitives::AccountId::from(
-                        ink_e2e::charlie().public_key().0,
-                    ),
-                    requestor_nonce: 1,
-                    min: 51_u128, // bad rpc that update the min and max values
-                    max: 51_u128,
-                },
-                js_script_hash: Some([1u8; 32]),
-                random_value,
-                error: None,
-            };
-            let actions = vec![
-                HandleActionInput::Reply(payload.encode()),
-                HandleActionInput::SetQueueHead(request_id + 1),
-            ];
-            let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
-            let result = client.call(&ink_e2e::bob(), rollup_cond_eq, 0, None).await;
-            assert!(
-                result.is_err(),
-                "We should not accept response with bad initial request"
-            );
+            assert_eq!(dapp_id, dapp_data.dapp_id);
+            assert_eq!(developer_address, dapp_data.dapp_stats.developer_address);
+            assert_eq!(nb_stakers, dapp_data.dapp_stats.nb_stakers);
+            assert_eq!(total_stake, dapp_data.dapp_stats.total_stake);
+            assert_ne!(0, dapp_data.last_update);
 
             Ok(())
         }
@@ -836,36 +457,18 @@ pub mod graph_api_consumer {
             // bob is granted as attestor
             alice_grants_bob_as_attestor(&mut client, &contract_id).await;
 
-            // a random value is requested
-            let request_random_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.request_random_value(100_u128, 1000_u128));
-            let result = client
-                .call(&ink_e2e::charlie(), request_random_value, 0, None)
-                .await
-                .expect("Request price should be sent");
-            // event MessageQueued
-            assert!(result.contains_event("Contracts", "ContractEmitted"));
-
-            let request_id = result.return_value().expect("Request id not found");
-
+            let dapp_id = "zsv1gvepvmwfdshmwgczs4zyvmmwesbjwqjn4wdpuefrrpy".to_string();
             // then a response is received
-            let payload = RandomValueResponseMessage {
+            let payload = GraphApiResponseMessage {
                 resp_type: TYPE_ERROR,
-                request: RandomValueRequestMessage {
-                    requestor_id: ink::primitives::AccountId::from(
-                        ink_e2e::charlie().public_key().0,
-                    ),
-                    requestor_nonce: 1,
-                    min: 100_u128,
-                    max: 1000_u128,
-                },
+                dapp_id,
                 js_script_hash: Some([1u8; 32]),
+                response_value: None,
                 error: Some(12356.encode()),
-                random_value: None,
             };
+
             let actions = vec![
                 HandleActionInput::Reply(payload.encode()),
-                HandleActionInput::SetQueueHead(request_id + 1),
             ];
             let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
                 .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
@@ -873,7 +476,7 @@ pub mod graph_api_consumer {
                 .call(&ink_e2e::bob(), rollup_cond_eq, 0, None)
                 .await
                 .expect("we should proceed error message");
-            // two events : MessageProcessedTo and PricesReceived
+            // two events : MessageProcessedTo and ErrorReceived
             assert!(result.contains_event("Contracts", "ContractEmitted"));
 
             Ok(())
@@ -912,7 +515,6 @@ pub mod graph_api_consumer {
             Ok(())
         }
 
-
         #[ink_e2e::test]
         async fn test_bad_js_code_hash(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
             // given
@@ -924,37 +526,23 @@ pub mod graph_api_consumer {
             // bob is granted as attestor
             alice_grants_bob_as_attestor(&mut client, &contract_id).await;
 
-            // a request is sent
-            let request_random_value = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.request_random_value(0_u128, 1000000000_u128));
-            let result = client
-                .call(&ink_e2e::charlie(), request_random_value, 0, None)
-                .await
-                .expect("Request random value should be sent");
-            // event MessageQueued
-            assert!(result.contains_event("Contracts", "ContractEmitted"));
-
-            let request_id = result.return_value().expect("Request id not found");
-
-            // then a response is received
-            let random_value = Some(51_u128);
-            let payload = RandomValueResponseMessage {
-                resp_type: TYPE_RESPONSE,
-                request: RandomValueRequestMessage {
-                    requestor_id: ink::primitives::AccountId::from(
-                        ink_e2e::charlie().public_key().0,
-                    ),
-                    requestor_nonce: 1,
-                    min: 0_u128, // bad rpc that update the min and max values
-                    max: 1000000000_u128,
-                },
+            // a response is received
+            let dapp_id = "zsv1gvepvmwfdshmwgczs4zyvmmwesbjwqjn4wdpuefrrpy".to_string();
+            // data is received
+            let stats = DappStats {
+                developer_address: "zsv1gvepvmwfdshmwgczs4zyvmmwesbjwqjn4wdpuefrrpy".to_string(),
+                nb_stakers: "82".to_string(),
+                total_stake: "999999999999999999999999999999999".to_string(),
+            };
+            let payload = GraphApiResponseMessage {
+                resp_type: TYPE_FEED,
+                dapp_id,
                 js_script_hash: Some([2u8; 32]), // bad js code hash
-                random_value,
+                response_value: Some(stats),
                 error: None,
             };
             let actions = vec![
                 HandleActionInput::Reply(payload.encode()),
-                HandleActionInput::SetQueueHead(request_id + 1),
             ];
             let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
                 .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
@@ -966,7 +554,6 @@ pub mod graph_api_consumer {
 
             Ok(())
         }
-
 
         #[ink_e2e::test]
         async fn test_bad_messages(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
@@ -987,56 +574,6 @@ pub mod graph_api_consumer {
             assert!(
                 result.is_err(),
                 "we should not be able to proceed bad messages"
-            );
-
-            Ok(())
-        }
-
-        #[ink_e2e::test]
-        async fn test_optimistic_locking(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
-            // given
-
-            let contract_id = alice_instantiates_contract(&mut client).await;
-
-            // set the js code hash
-            alice_set_js_script_hash(&mut client, &contract_id).await;
-
-            // bob is granted as attestor
-            alice_grants_bob_as_attestor(&mut client, &contract_id).await;
-
-            // then bob sends a message
-            // from v0 to v1 => it's ok
-            let conditions = vec![(123u8.encode(), None)];
-            let updates = vec![(123u8.encode(), Some(1u128.encode()))];
-            let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.rollup_cond_eq(conditions.clone(), updates.clone(), vec![]));
-            let result = client.call(&ink_e2e::bob(), rollup_cond_eq, 0, None).await;
-            result.expect("This message should be proceed because the condition is met");
-
-            // test idempotency it should fail because the conditions are not met
-            let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.rollup_cond_eq(conditions.clone(), updates.clone(), vec![]));
-            let result = client.call(&ink_e2e::bob(), rollup_cond_eq, 0, None).await;
-            assert!(
-                result.is_err(),
-                "This message should not be proceed because the condition is not met"
-            );
-
-            // from v1 to v2 => it's ok
-            let conditions = vec![(123u8.encode(), Some(1u128.encode()))];
-            let updates = vec![(123u8.encode(), Some(2u128.encode()))];
-            let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.rollup_cond_eq(conditions.clone(), updates.clone(), vec![]));
-            let result = client.call(&ink_e2e::bob(), rollup_cond_eq, 0, None).await;
-            result.expect("This message should be proceed because the condition is met");
-
-            // test idempotency it should fail because the conditions are not met
-            let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.rollup_cond_eq(conditions.clone(), updates.clone(), vec![]));
-            let result = client.call(&ink_e2e::bob(), rollup_cond_eq, 0, None).await;
-            assert!(
-                result.is_err(),
-                "This message should not be proceed because the condition is not met"
             );
 
             Ok(())
@@ -1089,16 +626,18 @@ pub mod graph_api_consumer {
             let signature = keypair.sign(&scale::Encode::encode(&request)).0;
 
             // do the meta tx: charlie sends the message
-            let meta_tx_rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.meta_tx_rollup_cond_eq(request.clone(), signature));
+            let meta_tx_rollup_cond_eq =
+                build_message::<GraphApiOracleClientRef>(contract_id.clone())
+                    .call(|oracle| oracle.meta_tx_rollup_cond_eq(request.clone(), signature));
             client
                 .call(&ink_e2e::charlie(), meta_tx_rollup_cond_eq, 0, None)
                 .await
                 .expect("meta tx rollup cond eq should not failed");
 
             // do it again => it must failed
-            let meta_tx_rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
-                .call(|oracle| oracle.meta_tx_rollup_cond_eq(request.clone(), signature));
+            let meta_tx_rollup_cond_eq =
+                build_message::<GraphApiOracleClientRef>(contract_id.clone())
+                    .call(|oracle| oracle.meta_tx_rollup_cond_eq(request.clone(), signature));
             let result = client
                 .call(&ink_e2e::charlie(), meta_tx_rollup_cond_eq, 0, None)
                 .await;
