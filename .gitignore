@@ -12,3 +12,7 @@ Cargo.lock
 
 # MSVC Windows builds of rustc generate these, which store debugging information
 *.pdb
+/phat/js/dist/
+/phat/js/node_modules/
+/phat/js/yarn.lock
+/phat/js/yarn-error.log
