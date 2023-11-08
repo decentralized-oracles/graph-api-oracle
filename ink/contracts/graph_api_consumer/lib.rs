@@ -173,10 +173,8 @@ pub mod graph_api_consumer {
             self.dapps_data.get(dapp_id)
         }
 
-
         #[ink(message)]
         pub fn request_dapp_data(&mut self, dapp_id: DappId) -> Result<QueueIndex, ContractError> {
-
             // push the message in the queue
             let message = GraphApiRequestMessage {
                 dapp_id: dapp_id.to_string(),
@@ -467,9 +465,7 @@ pub mod graph_api_consumer {
                 error: Some(12356.encode()),
             };
 
-            let actions = vec![
-                HandleActionInput::Reply(payload.encode()),
-            ];
+            let actions = vec![HandleActionInput::Reply(payload.encode())];
             let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
                 .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
             let result = client
@@ -541,9 +537,7 @@ pub mod graph_api_consumer {
                 response_value: Some(stats),
                 error: None,
             };
-            let actions = vec![
-                HandleActionInput::Reply(payload.encode()),
-            ];
+            let actions = vec![HandleActionInput::Reply(payload.encode())];
             let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
                 .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
             let result = client.call(&ink_e2e::bob(), rollup_cond_eq, 0, None).await;
