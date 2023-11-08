@@ -20,7 +20,7 @@ pink-extension = { version = "0.4.2", default-features = false }
 pink-json = { git = "https://github.com/Phala-Network/pink-json.git", branch = "pink", default-features = false, features = ["de-number-as-str"] }
 pink-web3 = { version = "0.20.2", default-features = false, features = ["pink", "signing"] }
 
-phat_offchain_rollup = { git = "https://github.com/GuiGou12358/phat-offchain-rollup" , default-features = false, features = ["ink"] }
+phat_offchain_rollup = { git = "https://github.com/Phala-Network/phat-offchain-rollup" , default-features = false, features = ["ink"] }
 
 subrpc = { package = "pink-subrpc", version = "0.4.2", default-features = false }
 hex = { version = "0.4", default-features = false }
