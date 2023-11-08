@@ -1,13 +1,20 @@
 # Graph Api Oracle with Ink! Smart Contract (on Astar Network) and Ink! Phat Contract (on Phala Network)
 
-Scenario described here in the communication betwen Ink! Smart Contract on Astar Network and Ink! Phat Contract on Phala Network:
-1) The Phat Contract `GraphApiOracle` (on Phala Network) queries the data from a graph api (subsquid, subquery or graph) and push the data into the Smart Contract `GraphApiConsumer` (on Astar Network)
-2) The Smart Contract `GraphApiConsumer` (on Astar Network) verifies the data used by the Phat Contract `GraphApiOracle` and saves the data to be displayed in the UI 
+Scenario described here in the communication between Ink! Smart Contract on Astar Network and Ink! Phat Contract on Phala Network:
+1) The Phat Contract `GraphApiOracle` (on Phala Network) queries the data from a graph api (subsquid, subquery or graph) and pushes the data into the Smart Contract `GraphApiConsumer` (on Astar Network)
+2) The Smart Contract `GraphApiConsumer` (on Astar Network) verifies the data and saves them to be displayed in the UI 
 
 You can find a demo here: TODO
 
 The Phat Contract and Ink! Smart Contract have been built with the Phat Offchain Rollup.
 The full documentation of this SDK can be found here: https://github.com/Phala-Network/phat-offchain-rollup
+
+The Phat Contract `GraphApiOracle` uses the crate phat_js to run the js code in charge of :
+ - format the data in input (graph api endpoint + data coming from Ink! Smart Contract by example)
+ - query the graph indexer 
+ - format the data in output 
+
+I use the `@phala/fn` CLI tool to generates the js code.
 
 
 ## Phat Contract `GraphApiOracle`
