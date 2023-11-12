@@ -14,16 +14,13 @@ import {
   WalkerImpl,
 } from "@scale-codec/core";
 
-
 type HexString = `0x${string}`
 
 type Input = {
-  graphApi: string,
   dappId: string,
 }
 
 const decodeInput = createStructDecoder<Input>([
-  ['graphApi', decodeStr],
   ['dappId', decodeStr],
 ]);
 
@@ -50,34 +47,15 @@ const encodeOutput = createStructEncoder<Output>([
   ['response_value', encodeDAppStats],
 ]);
 
-
 enum Error {
   FailedToFetchData = "FailedToFetchData",
   FailedToDecode = "FailedToDecode",
-  FailedToEncode = "FailedToEncode",
-  Other = "Other",
-}
-
-function errorToCode(error: Error): number {
-  switch (error) {
-    case Error.FailedToFetchData:
-      return 1;
-    case Error.FailedToDecode:
-      return 2;
-    case Error.FailedToEncode:
-      return 3;
-    case Error.Other:
-      return 4;
-    default:
-      return 4;
-  }
 }
 
 function isHexString(str: string): boolean {
   const regex = /^0x[0-9a-f]+$/;
   return regex.test(str.toLowerCase());
 }
-
 
 function stringToHex(str: string): string {
   var hex = "";
@@ -88,7 +66,6 @@ function stringToHex(str: string): string {
 }
 
 function fetchDappStakingStats(graphApi: string, dappId: string): any {
-  // dappId should be like 0x0001
   let headers = {
     "Content-Type": "application/json",
     "User-Agent": "phat-contract",
@@ -185,22 +162,19 @@ function formatOutput(output: Output): Uint8Array {
 //
 // The function will be called with two parameters:
 //
-// - request: The raw payload from the contract call `request` (check the `request` function in TestLensApiConsumerConract.sol).
-//            In this example, it's a tuple of two elements: [requestId, profileId]
-// - settings: The custom settings you set with the `config_core` function of the Action Offchain Rollup Phat Contract. In
-//            this example, it just a simple text of the lens api url prefix.
+// - request: The raw payload from the contract call `request`.
+//            In this example, it's a struct with the dAppId: { dappId }
+// - settings: The custom settings you set with the `config_core` function of the Action Offchain Rollup Phat Contract.
+//            In this example, it's just a simple text of the graph api url.
 //
-// Your returns value MUST be a hex string, and it will send to your contract directly. Check the `_onMessageReceived` function in
-// TestLensApiConsumerContract.sol for more details. We suggest a tuple of three elements: [successOrNotFlag, requestId, data] as
-// the return value.
-//
-//export default function main(graphApi: string, dappId: string): string {
-export default function main(request: HexString, secrets: string): Uint8Array {
+// Your returns value MUST be a Uint8Array, and it will send to your contract directly.
+export default function main(request: HexString, settings: string): Uint8Array {
 
   console.log(`handle req: ${request}`);
+  console.log(`settings: ${settings}`);
 
   let input = parseInput(request);
-  const graphApi = input.graphApi;
+  const graphApi = settings;
   const dappId = input.dappId;
 
   console.log(`Request received for dApp ${dappId}`);

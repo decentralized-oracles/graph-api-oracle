@@ -15,6 +15,7 @@ mod graph_api_oracle {
 
     type CodeHash = [u8; 32];
 
+    /*
     pub type DappId = String;
 
     /// Message to request the data
@@ -59,6 +60,7 @@ mod graph_api_oracle {
         /// when an error occurs
         error: Option<u8>,
     }
+     */
 
     /// Message sent to provide the data
     /// response pushed in the queue by the offchain rollup and read by the Ink! smart contract
@@ -68,11 +70,19 @@ mod graph_api_oracle {
             /// hash of js script executed to get the data
             js_script_hash: CodeHash,
             /// hash of data in input of js
-            //input_hash: CodeHash,
+            input_hash: CodeHash,
+            /// hash of settings of js
+            settings_hash: CodeHash,
             /// response value
             output_value: Vec<u8>,
         },
         Error {
+            /// hash of js script
+            js_script_hash: CodeHash,
+            /// input in js
+            input_value: Vec<u8>,
+            /// hash of settings of js
+            settings_hash: CodeHash,
             /// when an error occurs
             error: Vec<u8>,
         },
@@ -101,6 +111,8 @@ mod graph_api_oracle {
         settings: String,
         /// The code hash of the core js script
         code_hash: CodeHash,
+        /// The code hash of the settings in parameter of js script
+        settings_hash: CodeHash,
     }
 
     #[derive(Encode, Decode, Debug)]
@@ -253,22 +265,50 @@ mod graph_api_oracle {
             self.core_js.get()
         }
 
-        /// Configures the core js script (admin only)
+        /// Configures the core js (script + settings) (admin only)
         #[ink(message)]
-        pub fn config_core_js(&mut self, core_js: String, settings: String) -> Result<()> {
+        pub fn config_core_js(&mut self, script: String, settings: String) -> Result<()> {
             self.ensure_owner()?;
-            self.config_core_js_inner(core_js, settings);
+            self.config_core_js_inner(script, settings);
             Ok(())
         }
 
-        fn config_core_js_inner(&mut self, core_js: String, settings: String) {
+        /// Configures the core js (only script) (admin only)
+        #[ink(message)]
+        pub fn config_core_js_script(&mut self, script: String) -> Result<()> {
+            self.ensure_owner()?;
+            let Some(CoreJs { settings, .. }) = self.core_js.get() else {
+                error!("CoreNotConfigured");
+                return Err(ContractError::CoreNotConfigured);
+            };
+            self.config_core_js_inner(script, settings);
+            Ok(())
+        }
+
+        /// Configures the core js (only script) (admin only)
+        #[ink(message)]
+        pub fn config_core_js_settings(&mut self, settings: String) -> Result<()> {
+            self.ensure_owner()?;
+            let Some(CoreJs { script, .. }) = self.core_js.get() else {
+                error!("CoreNotConfigured");
+                return Err(ContractError::CoreNotConfigured);
+            };
+            self.config_core_js_inner(script, settings);
+            Ok(())
+        }
+
+        fn config_core_js_inner(&mut self, script: String, settings: String) {
             let code_hash = self
                 .env()
-                .hash_bytes::<ink::env::hash::Sha2x256>(core_js.as_bytes());
+                .hash_bytes::<ink::env::hash::Sha2x256>(script.as_bytes());
+            let settings_hash = self
+                .env()
+                .hash_bytes::<ink::env::hash::Sha2x256>(settings.as_bytes());
             self.core_js.set(&CoreJs {
-                script: core_js,
+                script,
                 settings,
                 code_hash,
+                settings_hash,
             });
         }
 
@@ -320,6 +360,7 @@ mod graph_api_oracle {
                 script,
                 code_hash,
                 settings,
+                settings_hash,
             }) = self.core_js.get()
             else {
                 error!("CoreNotConfigured");
@@ -327,11 +368,29 @@ mod graph_api_oracle {
             };
 
             let result = match self.run_js_inner(&script, request, settings) {
-                Ok(js_output) => ResponseMessage::JsResponse {
-                    output_value: js_output,
-                    js_script_hash: code_hash,
+                Ok(output_value) => {
+                    let input_hash = self
+                        .env()
+                        .hash_bytes::<ink::env::hash::Sha2x256>(request);
+                    ResponseMessage::JsResponse {
+                        js_script_hash: code_hash,
+                        input_hash,
+                        settings_hash,
+                        output_value,
+                    }
                 },
-                Err(e) => ResponseMessage::Error { error: e.encode() },
+                Err(ContractError::JsError(s)) => ResponseMessage::Error {
+                    js_script_hash: code_hash,
+                    input_value: request.to_vec(),
+                    settings_hash,
+                    error: s.into_bytes(),
+                },
+                Err(e) => ResponseMessage::Error {
+                    js_script_hash: code_hash,
+                    input_value: request.to_vec(),
+                    settings_hash,
+                    error: e.encode(),
+                },
             };
 
             Ok(result)
@@ -359,7 +418,7 @@ mod graph_api_oracle {
         ///
         /// For dev purpose. (admin only)
         #[ink(message)]
-        pub fn simulate_run_js(
+        pub fn dry_run_js(
             &self,
             js_code: String,
             request: Vec<u8>,
@@ -368,7 +427,7 @@ mod graph_api_oracle {
             self.ensure_owner()?;
             self.run_js_inner(&js_code, &request, settings)
         }
-
+/*
         /// Simulate the js
         ///
         /// For dev purpose. (admin only)
@@ -408,7 +467,7 @@ mod graph_api_oracle {
                 .map_err(|_| ContractError::FailedToDecode)?;
             Ok(result)
         }
-
+ */
         /// Returns BadOrigin error if the caller is not the owner
         fn ensure_owner(&self) -> Result<()> {
             if self.env().caller() == self.owner {

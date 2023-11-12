@@ -47,8 +47,8 @@ pub mod graph_api_consumer {
     pub struct ErrorReceived {
         /// dApp id requested
         dapp_id: DappId,
-        /// error number
-        err_no: Vec<u8>,
+        /// error
+        error: Vec<u8>,
         /// when the error has been received
         timestamp: u64,
     }
@@ -90,8 +90,6 @@ pub mod graph_api_consumer {
         derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
     )]
     pub struct GraphApiRequestMessage {
-        /// indexer endpoint
-        graph_api: String,
         /// id of the dapp
         dapp_id: DappId,
     }
@@ -133,11 +131,19 @@ pub mod graph_api_consumer {
             /// hash of js script executed to get the data
             js_script_hash: CodeHash,
             /// hash of data in input of js
-            //input_hash: CodeHash,
+            input_hash: CodeHash,
+            /// hash of settings of js
+            settings_hash: CodeHash,
             /// response value
             output_value: Vec<u8>,
         },
         Error {
+            /// hash of js script
+            js_script_hash: CodeHash,
+            /// input in js
+            input_value: Vec<u8>,
+            /// hash of settings of js
+            settings_hash: CodeHash,
             /// when an error occurs
             error: Vec<u8>,
         },
@@ -171,6 +177,8 @@ pub mod graph_api_consumer {
         meta_transaction: meta_transaction::Data,
         /// hash of js script executed to query the data
         js_script_hash: Lazy<CodeHash>,
+        /// hash of settings given in parameter to js runner
+        settings_hash: Lazy<CodeHash>,
         /// data linked to the dApps
         dapps_data: Mapping<DappId, DappData>,
     }
@@ -198,12 +206,10 @@ pub mod graph_api_consumer {
         #[ink(message)]
         pub fn request_dapp_data(
             &mut self,
-            graph_api: String,
             dapp_id: DappId,
         ) -> Result<QueueIndex, ContractError> {
             // push the message in the queue
             let message = GraphApiRequestMessage {
-                graph_api: graph_api.to_string(),
                 dapp_id: dapp_id.to_string(),
             };
 
@@ -248,6 +254,23 @@ pub mod graph_api_consumer {
         pub fn get_js_script_hash(&self) -> Option<CodeHash> {
             self.js_script_hash.get()
         }
+
+
+        #[ink(message)]
+        #[openbrush::modifiers(access_control::only_role(MANAGER_ROLE))]
+        pub fn set_settings_hash(
+            &mut self,
+            settings_hash: CodeHash,
+        ) -> Result<(), ContractError> {
+            self.settings_hash.set(&settings_hash);
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn get_settings_hash(&self) -> Option<CodeHash> {
+            self.settings_hash.get()
+        }
+
     }
 
     impl RollupAnchor for GraphApiOracleClient {}
@@ -262,8 +285,12 @@ pub mod graph_api_consumer {
             let timestamp = self.env().block_timestamp();
 
             match response {
-                ResponseMessage::JsResponse { js_script_hash, output_value } => {
-
+                ResponseMessage::JsResponse {
+                    js_script_hash,
+                    settings_hash,
+                    output_value ,
+                    ..
+                } => {
                     // check the js code hash
                     match self.js_script_hash.get() {
                         Some(expected_js_hash) => {
@@ -273,6 +300,17 @@ pub mod graph_api_consumer {
                         },
                         None => {}
                     }
+
+                    // check the settings hash
+                    match self.settings_hash.get() {
+                        Some(expected_settings_hash) => {
+                            if settings_hash != expected_settings_hash {
+                                return Err(RollupAnchorError::ConditionNotMet); // improve the error
+                            }
+                        },
+                        None => {}
+                    }
+
                     // we received the data
                     let message = GraphApiResponseMessage::decode(&mut output_value.as_slice())
                         .map_err(|_| RollupAnchorError::FailedToDecode)?;
@@ -293,7 +331,7 @@ pub mod graph_api_consumer {
                     // register the info
                     self.dapps_data.insert(dapp_id.to_string(), &dapp_data);
 
-                    // emmit te event
+                    // emmit the event
                     self.env().emit_event(ValueReceived {
                         dapp_id,
                         stats: DappStats {
@@ -304,11 +342,15 @@ pub mod graph_api_consumer {
                         timestamp,
                     });
                 }
-                ResponseMessage::Error { error } => {
+                ResponseMessage::Error { error, input_value, .. } => {
                     // we received an error
+
+                    let input = GraphApiRequestMessage::decode(&mut input_value.as_slice())
+                        .map_err(|_| RollupAnchorError::FailedToDecode)?;
+
                     self.env().emit_event(ErrorReceived {
-                        dapp_id : "none".to_string(),
-                        err_no: error,
+                        dapp_id : input.dapp_id,
+                        error: error,
                         timestamp,
                     });
                 }
@@ -398,6 +440,19 @@ pub mod graph_api_consumer {
                 .expect("set js code hash failed");
         }
 
+        async fn alice_set_settings_hash(
+            client: &mut ink_e2e::Client<PolkadotConfig, DefaultEnvironment>,
+            contract_id: &AccountId,
+        ) {
+            let code_hash = [2u8; 32];
+            let set_settings_hash = build_message::<GraphApiOracleClientRef>(contract_id.clone())
+                .call(|oracle| oracle.set_settings_hash(code_hash));
+            client
+                .call(&ink_e2e::alice(), set_settings_hash, 0, None)
+                .await
+                .expect("set settings hash failed");
+        }
+
         async fn alice_grants_bob_as_attestor(
             client: &mut ink_e2e::Client<PolkadotConfig, DefaultEnvironment>,
             contract_id: &AccountId,
@@ -420,6 +475,9 @@ pub mod graph_api_consumer {
             // set the js code hash
             alice_set_js_script_hash(&mut client, &contract_id).await;
 
+            // set the settings code hash
+            alice_set_settings_hash(&mut client, &contract_id).await;
+
             // bob is granted as attestor
             alice_grants_bob_as_attestor(&mut client, &contract_id).await;
 
@@ -439,6 +497,8 @@ pub mod graph_api_consumer {
             };
             let payload = JsResponse {
                 js_script_hash: [1u8; 32],
+                input_hash: [3u8; 32],
+                settings_hash: [2u8; 32],
                 output_value: response.encode(),
             };
             let actions = vec![HandleActionInput::Reply(payload.encode())];
@@ -476,14 +536,23 @@ pub mod graph_api_consumer {
             // set the js code hash
             alice_set_js_script_hash(&mut client, &contract_id).await;
 
+            // set the settings code hash
+            alice_set_settings_hash(&mut client, &contract_id).await;
+
             // bob is granted as attestor
             alice_grants_bob_as_attestor(&mut client, &contract_id).await;
 
             let dapp_id = "zsv1gvepvmwfdshmwgczs4zyvmmwesbjwqjn4wdpuefrrpy".to_string();
+            let input_data = GraphApiRequestMessage {
+                dapp_id: dapp_id.to_string(),
+            };
 
             // then a response is received
             let error = vec![3u8; 5];
             let payload = Error {
+                js_script_hash: [1u8; 32],
+                input_value: input_data.encode(),
+                settings_hash: [2u8; 32],
                 error,
             };
             let actions = vec![HandleActionInput::Reply(payload.encode())];
@@ -506,6 +575,9 @@ pub mod graph_api_consumer {
 
             // set the js code hash
             alice_set_js_script_hash(&mut client, &contract_id).await;
+
+            // set the settings code hash
+            alice_set_settings_hash(&mut client, &contract_id).await;
 
             // bob is not granted as attestor => it should not be able to send a message
             let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
@@ -533,12 +605,15 @@ pub mod graph_api_consumer {
         }
 
         #[ink_e2e::test]
-        async fn test_bad_js_code_hash(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
+        async fn test_bad_hash(mut client: ink_e2e::Client<C, E>) -> E2EResult<()> {
             // given
             let contract_id = alice_instantiates_contract(&mut client).await;
 
             // set the js code hash
             alice_set_js_script_hash(&mut client, &contract_id).await;
+
+            // set the settings code hash
+            alice_set_settings_hash(&mut client, &contract_id).await;
 
             // bob is granted as attestor
             alice_grants_bob_as_attestor(&mut client, &contract_id).await;
@@ -559,7 +634,9 @@ pub mod graph_api_consumer {
                 },
             };
             let payload = JsResponse {
-                js_script_hash: [2u8; 32],
+                js_script_hash: [9u8; 32],
+                input_hash: [3u8; 32],
+                settings_hash: [2u8; 32],
                 output_value: response.encode(),
             };
             let actions = vec![HandleActionInput::Reply(payload.encode())];
@@ -569,6 +646,21 @@ pub mod graph_api_consumer {
             assert!(
                 result.is_err(),
                 "We should not accept response with bad js code hash"
+            );
+
+            let payload = JsResponse {
+                js_script_hash: [1u8; 32],
+                input_hash: [3u8; 32],
+                settings_hash: [9u8; 32],
+                output_value: response.encode(),
+            };
+            let actions = vec![HandleActionInput::Reply(payload.encode())];
+            let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
+                .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
+            let result = client.call(&ink_e2e::bob(), rollup_cond_eq, 0, None).await;
+            assert!(
+                result.is_err(),
+                "We should not accept response with bad settings code hash"
             );
 
             Ok(())
@@ -582,6 +674,9 @@ pub mod graph_api_consumer {
 
             // set the js code hash
             alice_set_js_script_hash(&mut client, &contract_id).await;
+
+            // set the settings code hash
+            alice_set_settings_hash(&mut client, &contract_id).await;
 
             // bob is granted as attestor
             alice_grants_bob_as_attestor(&mut client, &contract_id).await;
