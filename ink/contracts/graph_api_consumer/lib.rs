@@ -36,8 +36,8 @@ pub mod graph_api_consumer {
     pub struct ValueReceived {
         /// dApp id requested
         dapp_id: DappId,
-        /// response value
-        response_value: DappStats,
+        /// stats
+        stats: DappStats,
         /// when the value has been received
         timestamp: u64,
     }
@@ -82,32 +82,18 @@ pub mod graph_api_consumer {
         }
     }
 
-    /// Type of response when the offchain rollup communicates with this contract
-    const TYPE_ERROR: u8 = 0;
-    const TYPE_RESPONSE: u8 = 10;
-    const TYPE_FEED: u8 = 11;
-
     /// Message to request the data
     /// message pushed in the queue by the Ink! smart contract and read by the offchain rollup
     #[derive(Eq, PartialEq, Clone, scale::Encode, scale::Decode)]
-    struct GraphApiRequestMessage {
+    #[cfg_attr(
+        feature = "std",
+        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+    )]
+    pub struct GraphApiRequestMessage {
+        /// indexer endpoint
+        graph_api: String,
         /// id of the dapp
         dapp_id: DappId,
-    }
-    /// Message sent to provide the data
-    /// response pushed in the queue by the offchain rollup and read by the Ink! smart contract
-    #[derive(Encode, Decode)]
-    struct GraphApiResponseMessage {
-        /// Type of response
-        resp_type: u8,
-        /// id of the dapp
-        dapp_id: DappId,
-        /// hash of js script executed to get the data
-        js_script_hash: Option<CodeHash>,
-        /// response value
-        response_value: Option<DappStats>,
-        /// when an error occurs
-        error: Option<Vec<u8>>,
     }
 
     #[derive(Encode, Decode, Default, Eq, PartialEq, Clone, Debug)]
@@ -117,8 +103,44 @@ pub mod graph_api_consumer {
     )]
     pub struct DappStats {
         developer_address: String,
-        nb_stakers: String,
-        total_stake: String,
+        nb_stakers: u64,
+        total_stake: Balance,
+    }
+
+    /// Message sent to provide the data
+    /// response pushed in the queue by the offchain rollup and read by the Ink! smart contract
+    #[derive(Encode, Decode)]
+    #[cfg_attr(
+        feature = "std",
+        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+    )]
+    pub struct GraphApiResponseMessage {
+        /// id of the dapp
+        dapp_id: DappId,
+        /// stats
+        stats: DappStats,
+    }
+
+    /// Message sent to provide the data
+    /// response pushed in the queue by the offchain rollup and read by the Ink! smart contract
+    #[derive(Encode, Decode)]
+    #[cfg_attr(
+        feature = "std",
+        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+    )]
+    enum ResponseMessage {
+        JsResponse {
+            /// hash of js script executed to get the data
+            js_script_hash: CodeHash,
+            /// hash of data in input of js
+            //input_hash: CodeHash,
+            /// response value
+            output_value: Vec<u8>,
+        },
+        Error {
+            /// when an error occurs
+            error: Vec<u8>,
+        },
     }
 
     /// Data storage
@@ -174,11 +196,17 @@ pub mod graph_api_consumer {
         }
 
         #[ink(message)]
-        pub fn request_dapp_data(&mut self, dapp_id: DappId) -> Result<QueueIndex, ContractError> {
+        pub fn request_dapp_data(
+            &mut self,
+            graph_api: String,
+            dapp_id: DappId,
+        ) -> Result<QueueIndex, ContractError> {
             // push the message in the queue
             let message = GraphApiRequestMessage {
+                graph_api: graph_api.to_string(),
                 dapp_id: dapp_id.to_string(),
             };
+
             let message_id = self.push_message(&message)?;
 
             // emmit te event
@@ -228,67 +256,62 @@ pub mod graph_api_consumer {
     impl rollup_anchor::MessageHandler for GraphApiOracleClient {
         fn on_message_received(&mut self, action: Vec<u8>) -> Result<(), RollupAnchorError> {
             // parse the response
-            let message: GraphApiResponseMessage =
+            let response: ResponseMessage =
                 Decode::decode(&mut &action[..]).or(Err(RollupAnchorError::FailedToDecode))?;
-
-            // check the js code hash
-            let expected_js_hash = self
-                .js_script_hash
-                .get()
-                .ok_or(RollupAnchorError::ConditionNotMet)?; // improve the error
-
-            let used_js_hash = message
-                .js_script_hash
-                .ok_or(RollupAnchorError::ConditionNotMet)?; // improve the error
-                                                             // check the js code hash
-            if used_js_hash != expected_js_hash {
-                return Err(RollupAnchorError::ConditionNotMet); // improve the error
-            }
 
             let timestamp = self.env().block_timestamp();
 
-            let dapp_id = message.dapp_id;
+            match response {
+                ResponseMessage::JsResponse { js_script_hash, output_value } => {
 
-            // handle the response
-            if message.resp_type == TYPE_FEED || message.resp_type == TYPE_RESPONSE {
-                // we received the data
-                let dapp_stats = message
-                    .response_value
-                    .ok_or(RollupAnchorError::FailedToDecode)?;
+                    // check the js code hash
+                    match self.js_script_hash.get() {
+                        Some(expected_js_hash) => {
+                            if js_script_hash != expected_js_hash {
+                                return Err(RollupAnchorError::ConditionNotMet); // improve the error
+                            }
+                        },
+                        None => {}
+                    }
+                    // we received the data
+                    let message = GraphApiResponseMessage::decode(&mut output_value.as_slice())
+                        .map_err(|_| RollupAnchorError::FailedToDecode)?;
 
-                let dapp_data = DappData {
-                    dapp_id: dapp_id.to_string(),
-                    dapp_stats: DappStats {
-                        total_stake: dapp_stats.total_stake.to_string(),
-                        nb_stakers: dapp_stats.nb_stakers.to_string(),
-                        developer_address: dapp_stats.developer_address.to_string(),
-                    },
-                    last_update: timestamp,
-                };
+                    let dapp_id = message.dapp_id;
+                    let dapp_stats = message.stats;
 
-                // register the info
-                self.dapps_data.insert(dapp_id.to_string(), &dapp_data);
+                    let dapp_data = DappData {
+                        dapp_id: dapp_id.to_string(),
+                        dapp_stats: DappStats {
+                            total_stake: dapp_stats.total_stake,
+                            nb_stakers: dapp_stats.nb_stakers,
+                            developer_address: dapp_stats.developer_address.to_string(),
+                        },
+                        last_update: timestamp,
+                    };
 
-                // emmit te event
-                self.env().emit_event(ValueReceived {
-                    dapp_id,
-                    response_value: DappStats {
-                        total_stake: dapp_stats.total_stake,
-                        nb_stakers: dapp_stats.nb_stakers,
-                        developer_address: dapp_stats.developer_address,
-                    },
-                    timestamp,
-                });
-            } else if message.resp_type == TYPE_ERROR {
-                // we received an error
-                self.env().emit_event(ErrorReceived {
-                    dapp_id,
-                    err_no: message.error.unwrap_or_default(),
-                    timestamp,
-                });
-            } else {
-                // response type unknown
-                return Err(RollupAnchorError::UnsupportedAction);
+                    // register the info
+                    self.dapps_data.insert(dapp_id.to_string(), &dapp_data);
+
+                    // emmit te event
+                    self.env().emit_event(ValueReceived {
+                        dapp_id,
+                        stats: DappStats {
+                            total_stake: dapp_stats.total_stake,
+                            nb_stakers: dapp_stats.nb_stakers,
+                            developer_address: dapp_stats.developer_address,
+                        },
+                        timestamp,
+                    });
+                }
+                ResponseMessage::Error { error } => {
+                    // we received an error
+                    self.env().emit_event(ErrorReceived {
+                        dapp_id : "none".to_string(),
+                        err_no: error,
+                        timestamp,
+                    });
+                }
             }
 
             Ok(())
@@ -341,6 +364,7 @@ pub mod graph_api_consumer {
             meta_transaction::metatransaction_external::MetaTransaction,
             rollup_anchor::rollupanchor_external::RollupAnchor,
         };
+        use crate::graph_api_consumer::ResponseMessage::{Error, JsResponse};
 
         type E2EResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -401,21 +425,21 @@ pub mod graph_api_consumer {
 
             let dapp_id = "zsv1gvepvmwfdshmwgczs4zyvmmwesbjwqjn4wdpuefrrpy".to_string();
             let developer_address = "zsv1gvepvmwfdshmwgczs4zyvmmwesbjwqjn4wdpuefrrpy".to_string();
-            let nb_stakers = "82".to_string();
-            let total_stake = "999999999999999999999999999999999".to_string();
+            let nb_stakers = 82;
+            let total_stake = 999999999999999999999999999999999;
 
             // data is received
-            let stats = DappStats {
-                developer_address: developer_address.to_string(),
-                nb_stakers: nb_stakers.to_string(),
-                total_stake: total_stake.to_string(),
-            };
-            let payload = GraphApiResponseMessage {
-                resp_type: TYPE_FEED,
+            let response = GraphApiResponseMessage {
                 dapp_id: dapp_id.to_string(),
-                js_script_hash: Some([1u8; 32]),
-                response_value: Some(stats),
-                error: None,
+                stats : DappStats {
+                    developer_address: developer_address.to_string(),
+                    nb_stakers,
+                    total_stake,
+                },
+            };
+            let payload = JsResponse {
+                js_script_hash: [1u8; 32],
+                output_value: response.encode(),
             };
             let actions = vec![HandleActionInput::Reply(payload.encode())];
             let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
@@ -456,15 +480,12 @@ pub mod graph_api_consumer {
             alice_grants_bob_as_attestor(&mut client, &contract_id).await;
 
             let dapp_id = "zsv1gvepvmwfdshmwgczs4zyvmmwesbjwqjn4wdpuefrrpy".to_string();
-            // then a response is received
-            let payload = GraphApiResponseMessage {
-                resp_type: TYPE_ERROR,
-                dapp_id,
-                js_script_hash: Some([1u8; 32]),
-                response_value: None,
-                error: Some(12356.encode()),
-            };
 
+            // then a response is received
+            let error = vec![3u8; 5];
+            let payload = Error {
+                error,
+            };
             let actions = vec![HandleActionInput::Reply(payload.encode())];
             let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())
                 .call(|oracle| oracle.rollup_cond_eq(vec![], vec![], actions.clone()));
@@ -524,18 +545,22 @@ pub mod graph_api_consumer {
 
             // a response is received
             let dapp_id = "zsv1gvepvmwfdshmwgczs4zyvmmwesbjwqjn4wdpuefrrpy".to_string();
+            let developer_address = "zsv1gvepvmwfdshmwgczs4zyvmmwesbjwqjn4wdpuefrrpy".to_string();
+            let nb_stakers = 82;
+            let total_stake = 999999999999999999999999999999999;
+
             // data is received
-            let stats = DappStats {
-                developer_address: "zsv1gvepvmwfdshmwgczs4zyvmmwesbjwqjn4wdpuefrrpy".to_string(),
-                nb_stakers: "82".to_string(),
-                total_stake: "999999999999999999999999999999999".to_string(),
-            };
-            let payload = GraphApiResponseMessage {
-                resp_type: TYPE_FEED,
+            let response = GraphApiResponseMessage {
                 dapp_id,
-                js_script_hash: Some([2u8; 32]), // bad js code hash
-                response_value: Some(stats),
-                error: None,
+                stats : DappStats {
+                    developer_address,
+                    nb_stakers,
+                    total_stake,
+                },
+            };
+            let payload = JsResponse {
+                js_script_hash: [2u8; 32],
+                output_value: response.encode(),
             };
             let actions = vec![HandleActionInput::Reply(payload.encode())];
             let rollup_cond_eq = build_message::<GraphApiOracleClientRef>(contract_id.clone())

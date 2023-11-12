@@ -3,27 +3,79 @@
 // *** NETWORK WILL FAIL. IF YOU WANT TO KNOW MORE, JOIN OUR DISCORD TO SPEAK   ***
 // *** WITH THE PHALA TEAM AT https://discord.gg/5HfmWQNX THANK YOU             ***
 import "@phala/pink-env";
+import {
+  createStructDecoder,
+  createStructEncoder,
+  decodeStr,
+  encodeStr,
+  encodeU64,
+  encodeU128,
+  variant,
+  WalkerImpl,
+} from "@scale-codec/core";
+
+
+type HexString = `0x${string}`
+
+type Input = {
+  graphApi: string,
+  dappId: string,
+}
+
+const decodeInput = createStructDecoder<Input>([
+  ['graphApi', decodeStr],
+  ['dappId', decodeStr],
+]);
+
+
+type Output = {
+  dappId: string,
+  response_value: DAppStats
+}
+
+type DAppStats = {
+  developerAddress: string;
+  nbStakers: bigint;
+  totalStake: bigint;
+}
+
+const encodeDAppStats = createStructEncoder<DAppStats>([
+  ['developerAddress', encodeStr],
+  ['nbStakers', encodeU64],
+  ['totalStake', encodeU128],
+]);
+
+const encodeOutput = createStructEncoder<Output>([
+  ['dappId', encodeStr],
+  ['response_value', encodeDAppStats],
+]);
+
 
 enum Error {
-  BadLensProfileId = "BadLensProfileId",
   FailedToFetchData = "FailedToFetchData",
   FailedToDecode = "FailedToDecode",
-  MalformedRequest = "MalformedRequest",
+  FailedToEncode = "FailedToEncode",
+  Other = "Other",
 }
 
 function errorToCode(error: Error): number {
   switch (error) {
-    case Error.BadLensProfileId:
-      return 1;
     case Error.FailedToFetchData:
-      return 2;
+      return 1;
     case Error.FailedToDecode:
+      return 2;
+    case Error.FailedToEncode:
       return 3;
-    case Error.MalformedRequest:
+    case Error.Other:
       return 4;
     default:
-      return 0;
+      return 4;
   }
+}
+
+function isHexString(str: string): boolean {
+  const regex = /^0x[0-9a-f]+$/;
+  return regex.test(str.toLowerCase());
 }
 
 
@@ -99,6 +151,34 @@ function fetchDappStakingStats(graphApi: string, dappId: string): any {
 }
 
 
+function parseInput(hexx: string): Input {
+  let hex = hexx.toString();
+  if (!isHexString(hex)) {
+    throw Error.FailedToDecode;
+  }
+  hex = hex.slice(2);
+
+  let arr = new Array<number>();
+  let i = 0;
+
+  for (let c = 0; c < hex.length; c += 2) {
+    arr[i++] = parseInt(hex.substring(c, c + 2), 16);
+  }
+
+  let input = WalkerImpl.decode(new Uint8Array(arr), decodeInput);
+
+  return input;
+}
+
+function formatOutput(output: Output): Uint8Array {
+
+  const encodedOutput = WalkerImpl.encode(output, encodeOutput);
+  console.log("encodedOutput:", encodedOutput);
+
+  return encodedOutput;
+}
+
+
 //
 // Here is what you need to implemented for Phat Function, you can customize your logic with
 // JavaScript here.
@@ -114,29 +194,61 @@ function fetchDappStakingStats(graphApi: string, dappId: string): any {
 // TestLensApiConsumerContract.sol for more details. We suggest a tuple of three elements: [successOrNotFlag, requestId, data] as
 // the return value.
 //
-export default function main(graphApi: string, dappId: string): string {
-  // TODO parse the request from ink! smart contract
+//export default function main(graphApi: string, dappId: string): string {
+export default function main(request: HexString, secrets: string): Uint8Array {
+
+  console.log(`handle req: ${request}`);
+
+  let input = parseInput(request);
+  const graphApi = input.graphApi;
+  const dappId = input.dappId;
+
   console.log(`Request received for dApp ${dappId}`);
   console.log(`Query endpoint ${graphApi}`);
 
   try {
     const respData = fetchDappStakingStats(graphApi, dappId);
     let dApp = respData.data.dApps.nodes[0];
-    let stats = JSON.stringify({
-      dAppId: dappId,
+
+    const stats: DAppStats = {
       developerAddress: dApp.accountId,
-      nbStakers : dApp.stakes.totalCount,
-      totalStake : dApp.stakes.aggregates.sum.totalStake,
-    });
-    console.log("stats:", stats);
-    return stats;
+      nbStakers: BigInt(dApp.stakes.totalCount),
+      totalStake: BigInt(parseFloat(dApp.stakes.aggregates.sum.totalStake)),
+    }
+
+    const output: Output = {
+      dappId: dappId,
+      //response_value: variant("Some", stats),
+      response_value: stats,
+      //error: variant('None'),
+    }
+
+    console.log(`output - dappId: ${output.dappId}`);
+    console.log(`output - developerAddress: ${stats.developerAddress}`);
+    console.log(`output - nbStakers: ${stats.nbStakers}`);
+    console.log(`output - totalStake: ${stats.totalStake}`);
+
+    return formatOutput(output);
   } catch (error) {
+    console.log("error:", error);
+    throw error;
+    /*
     if (error === Error.FailedToFetchData) {
       throw error;
     } else {
       // otherwise tell client we cannot process it
       console.log("error:", error);
-      return "Error"; //TODO
+
+      const output: Output = {
+        resp_type: 2,
+        dappId: dappId,
+        error: variant("Some", errorToCode(error as Error)),
+        response_value: variant("None"),
+      }
+
+      console.log("3");
+      return formatOutput(output);
     }
+     */
   }
 }

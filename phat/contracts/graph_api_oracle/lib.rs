@@ -6,7 +6,7 @@ extern crate core;
 #[ink::contract(env = pink_extension::PinkEnvironment)]
 mod graph_api_oracle {
 
-    use alloc::{collections::BTreeMap, string::String, string::ToString, vec, vec::Vec};
+    use alloc::{string::String, string::ToString, vec::Vec};
     use ink::storage::Lazy;
     use phat_offchain_rollup::clients::ink::{Action, ContractId, InkRollupClient};
     use pink_extension::chain_extension::signing;
@@ -14,45 +14,68 @@ mod graph_api_oracle {
     use scale::{Decode, Encode};
 
     type CodeHash = [u8; 32];
-    /// Type of response when the offchain rollup communicates with this contract
-    const TYPE_ERROR: u8 = 0;
-    const TYPE_RESPONSE: u8 = 10;
-    const TYPE_FEED: u8 = 11;
 
     pub type DappId = String;
 
     /// Message to request the data
     /// message pushed in the queue by the Ink! smart contract and read by the offchain rollup
     #[derive(Eq, PartialEq, Clone, scale::Encode, scale::Decode)]
-    struct GraphApiRequestMessage {
+    #[cfg_attr(
+        feature = "std",
+        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+    )]
+    pub struct GraphApiRequestMessage {
+        /// indexer endpoint
+        graph_api: String,
         /// id of the dapp
         dapp_id: DappId,
-    }
-    /// Message sent to provide the data
-    /// response pushed in the queue by the offchain rollup and read by the Ink! smart contract
-    #[derive(Encode, Decode)]
-    struct GraphApiResponseMessage {
-        /// Type of response
-        resp_type: u8,
-        /// id of the dapp
-        dapp_id: DappId,
-        /// hash of js script executed to get the data
-        js_script_hash: Option<CodeHash>,
-        /// response value
-        response_value: Option<DappStats>,
-        /// when an error occurs
-        error: Option<Vec<u8>>,
     }
 
     #[derive(Encode, Decode, Default, Eq, PartialEq, Clone, Debug)]
     #[cfg_attr(
-    feature = "std",
-    derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+        feature = "std",
+        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
     )]
     pub struct DappStats {
         developer_address: String,
-        nb_stakers: String,
-        total_stake: String,
+        nb_stakers: u64,
+        total_stake: Balance,
+    }
+
+    /// Message sent to provide the data
+    /// response pushed in the queue by the offchain rollup and read by the Ink! smart contract
+    #[derive(Encode, Decode)]
+    #[cfg_attr(
+        feature = "std",
+        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+    )]
+    pub struct GraphApiResponseMessage {
+        /// Type of response
+        resp_type: u8,
+        /// id of the dapp
+        dapp_id: DappId,
+        /// response value
+        response_value: Option<DappStats>,
+        /// when an error occurs
+        error: Option<u8>,
+    }
+
+    /// Message sent to provide the data
+    /// response pushed in the queue by the offchain rollup and read by the Ink! smart contract
+    #[derive(Encode, Decode)]
+    enum ResponseMessage {
+        JsResponse {
+            /// hash of js script executed to get the data
+            js_script_hash: CodeHash,
+            /// hash of data in input of js
+            //input_hash: CodeHash,
+            /// response value
+            output_value: Vec<u8>,
+        },
+        Error {
+            /// when an error occurs
+            error: Vec<u8>,
+        },
     }
 
     #[ink(storage)]
@@ -62,8 +85,6 @@ mod graph_api_oracle {
         config: Option<Config>,
         /// Key for signing the rollup tx.
         attest_key: [u8; 32],
-        /// The graph api used to query the data
-        graph_api: Option<String>,
         /// The JS code that processes the rollup queue request
         core_js: Lazy<CoreJs>,
     }
@@ -76,6 +97,8 @@ mod graph_api_oracle {
     pub struct CoreJs {
         /// The JS code that processes the rollup queue request
         script: String,
+        /// The configuration that would be passed to the core js script
+        settings: String,
         /// The code hash of the core js script
         code_hash: CodeHash,
     }
@@ -111,7 +134,7 @@ mod graph_api_oracle {
         FailedToCommitTx,
         FailedToCallRollup,
         JsError(String),
-        FailedToParse,
+        FailedToDecode,
     }
 
     type Result<T> = core::result::Result<T, ContractError>;
@@ -133,7 +156,6 @@ mod graph_api_oracle {
                 owner: Self::env().caller(),
                 attest_key: private_key[..32].try_into().expect("Invalid Key Length"),
                 config: None,
-                graph_api: None,
                 core_js: Default::default(),
             };
             instance
@@ -225,24 +247,6 @@ mod graph_api_oracle {
             Ok(())
         }
 
-        /// Get the graph api
-        #[ink(message)]
-        pub fn get_graph_api(&self) -> Option<String> {
-            self.graph_api.clone()
-        }
-
-        /// Configures the graph api (admin only)
-        #[ink(message)]
-        pub fn config_graph_api(&mut self, graph_api: String) -> Result<()> {
-            self.ensure_owner()?;
-            self.config_graph_api_inner(graph_api);
-            Ok(())
-        }
-
-        fn config_graph_api_inner(&mut self, graph_api: String) {
-            self.graph_api = Some(graph_api);
-        }
-
         /// Get the core script
         #[ink(message)]
         pub fn get_core_js(&self) -> Option<CoreJs> {
@@ -251,18 +255,19 @@ mod graph_api_oracle {
 
         /// Configures the core js script (admin only)
         #[ink(message)]
-        pub fn config_core_js(&mut self, core_js: String) -> Result<()> {
+        pub fn config_core_js(&mut self, core_js: String, settings: String) -> Result<()> {
             self.ensure_owner()?;
-            self.config_core_js_inner(core_js);
+            self.config_core_js_inner(core_js, settings);
             Ok(())
         }
 
-        fn config_core_js_inner(&mut self, core_js: String) {
+        fn config_core_js_inner(&mut self, core_js: String, settings: String) {
             let code_hash = self
                 .env()
                 .hash_bytes::<ink::env::hash::Sha2x256>(core_js.as_bytes());
             self.core_js.set(&CoreJs {
                 script: core_js,
+                settings,
                 code_hash,
             });
         }
@@ -274,98 +279,69 @@ mod graph_api_oracle {
             self.owner = new_owner;
             Ok(())
         }
+        /*
+               /// Processes a request by a rollup transaction
+               #[ink(message)]
+               pub fn answer_request(&self) -> Result<Option<Vec<u8>>> {
+                   let config = self.ensure_client_configured()?;
+                   let mut client = connect(config)?;
 
-        /// Processes a request by a rollup transaction
-        #[ink(message)]
-        pub fn answer_request(&self) -> Result<Option<Vec<u8>>> {
-            let config = self.ensure_client_configured()?;
-            let mut client = connect(config)?;
+                   // Get a request if presents
+                   let request = client
+                       .pop()
+                       .log_err("answer_request: failed to read queue")?
+                       .ok_or(ContractError::NoRequestInQueue)?;
 
-            // Get a request if presents
-            let request: GraphApiRequestMessage = client
-                .pop()
-                .log_err("answer_request: failed to read queue")?
-                .ok_or(ContractError::NoRequestInQueue)?;
+                   let response = self.handle_request(&request)?;
+                   // Attach an action to the tx by:
+                   client.action(Action::Reply(response.encode()));
 
-            let response = self.handle_request(request, TYPE_RESPONSE)?;
-            // Attach an action to the tx by:
-            client.action(Action::Reply(response.encode()));
+                   maybe_submit_tx(client, &self.attest_key, config.sender_key.as_ref())
+               }
 
-            maybe_submit_tx(client, &self.attest_key, config.sender_key.as_ref())
-        }
+        */
 
         /// Feed the data
         #[ink(message)]
-        pub fn feed_dapp(&self, dapp_id: DappId) -> Result<Option<Vec<u8>>> {
+        pub fn feed_data(&self, request: Vec<u8>) -> Result<Option<Vec<u8>>> {
             let config = self.ensure_client_configured()?;
             let mut client = connect(config)?;
 
-            // build the request
-            let request = GraphApiRequestMessage {
-                dapp_id
-            };
-
-            let response = self.handle_request(request, TYPE_FEED)?;
+            let response = self.handle_request(&request)?;
             // Attach an action to the tx by:
             client.action(Action::Reply(response.encode()));
 
             maybe_submit_tx(client, &self.attest_key, config.sender_key.as_ref())
         }
 
-        fn handle_request(
-            &self,
-            request: GraphApiRequestMessage,
-            resp_type: u8,
-        ) -> Result<GraphApiResponseMessage> {
-            let dapp_id = request.dapp_id;
-
-            let Some(CoreJs { script, code_hash }) = self.core_js.get() else {
+        /// Processes a request with the the core js and returns the response.
+        fn handle_request(&self, request: &[u8]) -> Result<ResponseMessage> {
+            let Some(CoreJs {
+                script,
+                code_hash,
+                settings,
+            }) = self.core_js.get()
+            else {
                 error!("CoreNotConfigured");
                 return Err(ContractError::CoreNotConfigured);
             };
 
-            let Some(graph_api) = self.graph_api.clone() else {
-                error!("GraphApiNotConfigured");
-                return Err(ContractError::GraphApiNotConfigured);
+            let result = match self.run_js_inner(&script, request, settings) {
+                Ok(js_output) => ResponseMessage::JsResponse {
+                    output_value: js_output,
+                    js_script_hash: code_hash,
+                },
+                Err(e) => ResponseMessage::Error { error: e.encode() },
             };
 
-            info!("Request received from dApp {dapp_id:?}");
-
-            let response = match self.get_data(graph_api, script, dapp_id.clone()) {
-                Ok(data) => GraphApiResponseMessage {
-                    resp_type,
-                    dapp_id,
-                    js_script_hash: Some(code_hash),
-                    response_value: Some(data),
-                    error: None,
-                },
-                Err(e) => GraphApiResponseMessage {
-                    resp_type: TYPE_ERROR,
-                    dapp_id,
-                    js_script_hash: Some(code_hash),
-                    response_value: None,
-                    error: Some(e.encode()),
-                },
-            };
-            Ok(response)
-        }
-
-        /// Simulate and return the data (for dev purpose)
-        #[ink(message)]
-        pub fn get_data(
-            &self,
-            graph_api: String,
-            js_code: String,
-            dapp_id: DappId,
-        ) -> Result<DappStats> {
-            let args = vec![graph_api.to_string(), dapp_id.to_string()];
-            let result = self.get_js_result(js_code.to_string(), args)?;
-            info!("data for dApp {dapp_id} :  {result:?}");
             Ok(result)
         }
 
-        fn get_js_result(&self, js_code: String, args: Vec<String>) -> Result<DappStats> {
-            let output = phat_js::eval(&js_code, &args)
+        /// Processes a request with the the core js and returns the output.
+        fn run_js_inner(&self, js_code: &str, request: &[u8], settings: String) -> Result<Vec<u8>> {
+            let args = alloc::vec![alloc::format!("0x{}", hex_fmt::HexFmt(request)), settings];
+
+            let output = phat_js::eval(js_code, &args)
                 .log_err("Failed to eval the core js")
                 .map_err(ContractError::JsError)?;
 
@@ -377,32 +353,60 @@ mod graph_api_oracle {
                 }
             };
 
-            // The response looks like:
-            //      {
-            //         "developerAddress": "...",
-            //         "nbStakers": "...",
-            //         "totalStake": "...",
-            //     }
-            //
-
-            //let output_as_string = String::from_utf8(output_as_bytes).unwrap();
-
-            //let parsed: BTreeMap<String, BTreeMap<String, String>> =
-            let parsed: BTreeMap<String, String> = pink_json::from_slice(&output_as_bytes)
-                .log_err("failed to parse json")
-                .or(Err(ContractError::FailedToParse))?;
-
-            Self::convert_data(parsed)
+            Ok(output_as_bytes)
+        }
+        /// Simulate the js
+        ///
+        /// For dev purpose. (admin only)
+        #[ink(message)]
+        pub fn simulate_run_js(
+            &self,
+            js_code: String,
+            request: Vec<u8>,
+            settings: String,
+        ) -> Result<Vec<u8>> {
+            self.ensure_owner()?;
+            self.run_js_inner(&js_code, &request, settings)
         }
 
-        /// Returns BadOrigin error if the caller is not the owner
-        fn convert_data(map: BTreeMap<String, String>) -> Result<DappStats> {
-            let data = DappStats {
-                developer_address: map.get("developerAddress").unwrap().to_string(),
-                nb_stakers: map.get("nbStakers").unwrap().to_string(),
-                total_stake: map.get("totalStake").unwrap().to_string(),
+        /// Simulate the js
+        ///
+        /// For dev purpose. (admin only)
+        #[ink(message)]
+        pub fn simulate_run_js_2(
+            &self,
+            js_code: String,
+            graph_api: String,
+            dapp_id: String,
+        ) -> Result<GraphApiResponseMessage> {
+            self.ensure_owner()?;
+
+            // build the request
+            let request = GraphApiRequestMessage {
+                graph_api,
+                dapp_id: dapp_id.to_string(),
             };
-            Ok(data)
+            info!("input: {:0x?}", request.encode());
+
+            let output = self.run_js_inner(&js_code, &request.encode(), "".to_string())?;
+            info!("output: {:0x?}", output);
+
+            let expected = GraphApiResponseMessage {
+                resp_type: 1,
+                dapp_id: dapp_id.to_string(),
+                response_value: Some(DappStats {
+                    total_stake: 6170980111660422740836352,
+                    nb_stakers: 45,
+                    developer_address: "ZEUr1PBaxshhhPcF4jeVFVoC6BwCDYj48UsJ5ShquWN2yeE"
+                        .to_string(),
+                }),
+                error: None,
+            };
+            info!("expected: {:0x?}", expected.encode());
+
+            let result = GraphApiResponseMessage::decode(&mut output.as_slice())
+                .map_err(|_| ContractError::FailedToDecode)?;
+            Ok(result)
         }
 
         /// Returns BadOrigin error if the caller is not the owner
@@ -557,29 +561,6 @@ mod graph_api_oracle {
             oracle.set_attest_key(Some(attest_key)).unwrap();
 
             oracle
-        }
-
-        #[ink::test]
-        #[ignore = "The JS Contract is not accessible inner the test"]
-        fn get_js_result() {
-            let _ = env_logger::try_init();
-            pink_extension_runtime::mock_ext::mock_all_ext();
-
-            let oracle = init_contract();
-
-            let a = 5;
-            let b = 9;
-            let js_code = format!(
-                r#"
-                    (() => {{
-                        let total = {a} + {b};
-                        return total
-                    }})();
-                "#
-            );
-            let args = vec![];
-            let result = oracle.get_js_result(js_code, args).unwrap();
-            debug_println!("random number: {result:?}");
         }
 
         #[ink::test]
