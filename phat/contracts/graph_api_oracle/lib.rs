@@ -319,27 +319,26 @@ mod graph_api_oracle {
             self.owner = new_owner;
             Ok(())
         }
-        /*
-               /// Processes a request by a rollup transaction
-               #[ink(message)]
-               pub fn answer_request(&self) -> Result<Option<Vec<u8>>> {
-                   let config = self.ensure_client_configured()?;
-                   let mut client = connect(config)?;
 
-                   // Get a request if presents
-                   let request = client
-                       .pop()
-                       .log_err("answer_request: failed to read queue")?
-                       .ok_or(ContractError::NoRequestInQueue)?;
+       /// Processes a request by a rollup transaction
+       #[ink(message)]
+       pub fn answer_request(&self) -> Result<Option<Vec<u8>>> {
+           let config = self.ensure_client_configured()?;
+           let mut client = connect(config)?;
 
-                   let response = self.handle_request(&request)?;
-                   // Attach an action to the tx by:
-                   client.action(Action::Reply(response.encode()));
+           // Get a request if presents
+           let request = client
+               .pop_raw()
+               .log_err("answer_request: failed to read queue")?
+               .ok_or(ContractError::NoRequestInQueue)?;
 
-                   maybe_submit_tx(client, &self.attest_key, config.sender_key.as_ref())
-               }
+           let response = self.handle_request(&request)?;
+           // Attach an action to the tx by:
+           client.action(Action::Reply(response.encode()));
 
-        */
+           maybe_submit_tx(client, &self.attest_key, config.sender_key.as_ref())
+       }
+
 
         /// Feed the data
         #[ink(message)]
