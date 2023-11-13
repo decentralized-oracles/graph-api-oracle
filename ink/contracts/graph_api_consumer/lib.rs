@@ -204,6 +204,17 @@ pub mod graph_api_consumer {
         }
 
         #[ink(message)]
+        pub fn get_request_message_raw(
+            &self,
+            dapp_id: DappId,
+        ) -> Vec<u8> {
+            let message = GraphApiRequestMessage {
+                dapp_id,
+            };
+            message.encode()
+        }
+
+        #[ink(message)]
         pub fn request_dapp_data(
             &mut self,
             dapp_id: DappId,
