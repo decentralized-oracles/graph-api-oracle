@@ -14,10 +14,10 @@ The Phat Contract `GraphApiOracle` uses the crate phat_js to run the js code in 
  - query the graph indexer 
  - format the data in output 
 
-I use the `@phala/fn` CLI tool to generates the js code.
+It uses the `@phala/fn` CLI tool to generates the js code.
 
 
-## Phat Contract `JsOffchainRollup`
+## Phat Contract `GraphApiOracle`
 
 To deploy this Phat Contract you can build the contract or use existing artifacts
 

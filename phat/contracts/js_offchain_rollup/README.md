@@ -1,10 +1,13 @@
-# Graph API Oracle
+# JS Offchain Rollup
 
-Implements a simple Graph API Oracle with Ink! Offchain Rollup and phat_js.
-It supports :
- - Run a js code to query the data from a graph indexer (subsquid or subquery by example) 
- - Push the data into the Ink! Smart Contract.
+The JS Offchain Rollup is your one-stop solution to connect any API to your ink! smart contract. 
 
+This phat contract empowers you to initiate the data request from the ink! smart contract side. 
+The request is then seamlessly sent to your js script for processing. 
+You have the liberty to call any APIs to fulfill the request and define the response data structure that will be replied to your ink! smart contract.
+
+Here some example :
+ - Graph API Oracle: [../js/artifacts/graph_api_oracle.ts](../js/artifacts/graph_api_oracle.ts)
 
 ## Build
 
