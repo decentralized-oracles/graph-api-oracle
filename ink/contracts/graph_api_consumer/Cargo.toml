@@ -12,7 +12,7 @@ scale-info = { version = "2", default-features = false, features = ["derive"], o
 
 openbrush = { git = "https://github.com/Brushfam/openbrush-contracts", version = "4.0.0-beta", features = ["ownable", "access_control", "upgradeable"], default-features = false }
 
-phat_rollup_anchor_ink = { git = "https://github.com/Phala-Network/phat-offchain-rollup" , default-features = false}
+phat_rollup_anchor_ink = { git = "https://github.com/GuiGou12358/phat-offchain-rollup" , default-features = false}
 
 [dev-dependencies]
 ink_e2e = { version = "4.3.0" }

@@ -10,57 +10,10 @@ mod graph_api_oracle {
     use ink::storage::Lazy;
     use phat_offchain_rollup::clients::ink::{Action, ContractId, InkRollupClient};
     use pink_extension::chain_extension::signing;
-    use pink_extension::{error, info, ResultExt};
+    use pink_extension::{error, ResultExt};
     use scale::{Decode, Encode};
 
     type CodeHash = [u8; 32];
-
-    /*
-    pub type DappId = String;
-
-    /// Message to request the data
-    /// message pushed in the queue by the Ink! smart contract and read by the offchain rollup
-    #[derive(Eq, PartialEq, Clone, scale::Encode, scale::Decode)]
-    #[cfg_attr(
-        feature = "std",
-        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
-    )]
-    pub struct GraphApiRequestMessage {
-        /// indexer endpoint
-        graph_api: String,
-        /// id of the dapp
-        dapp_id: DappId,
-    }
-
-    #[derive(Encode, Decode, Default, Eq, PartialEq, Clone, Debug)]
-    #[cfg_attr(
-        feature = "std",
-        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
-    )]
-    pub struct DappStats {
-        developer_address: String,
-        nb_stakers: u64,
-        total_stake: Balance,
-    }
-
-    /// Message sent to provide the data
-    /// response pushed in the queue by the offchain rollup and read by the Ink! smart contract
-    #[derive(Encode, Decode)]
-    #[cfg_attr(
-        feature = "std",
-        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
-    )]
-    pub struct GraphApiResponseMessage {
-        /// Type of response
-        resp_type: u8,
-        /// id of the dapp
-        dapp_id: DappId,
-        /// response value
-        response_value: Option<DappStats>,
-        /// when an error occurs
-        error: Option<u8>,
-    }
-     */
 
     /// Message sent to provide the data
     /// response pushed in the queue by the offchain rollup and read by the Ink! smart contract
@@ -164,13 +117,12 @@ mod graph_api_oracle {
             const NONCE: &[u8] = b"attest_key";
             let private_key = signing::derive_sr25519_key(NONCE);
 
-            let instance = Self {
+            Self {
                 owner: Self::env().caller(),
                 attest_key: private_key[..32].try_into().expect("Invalid Key Length"),
                 config: None,
                 core_js: Default::default(),
-            };
-            instance
+            }
         }
 
         /// Gets the owner of the contract
@@ -320,25 +272,24 @@ mod graph_api_oracle {
             Ok(())
         }
 
-       /// Processes a request by a rollup transaction
-       #[ink(message)]
-       pub fn answer_request(&self) -> Result<Option<Vec<u8>>> {
-           let config = self.ensure_client_configured()?;
-           let mut client = connect(config)?;
+        /// Processes a request by a rollup transaction
+        #[ink(message)]
+        pub fn answer_request(&self) -> Result<Option<Vec<u8>>> {
+            let config = self.ensure_client_configured()?;
+            let mut client = connect(config)?;
 
-           // Get a request if presents
-           let request = client
-               .pop_raw()
-               .log_err("answer_request: failed to read queue")?
-               .ok_or(ContractError::NoRequestInQueue)?;
+            // Get a request if presents
+            let request = client
+                .pop_raw()
+                .log_err("answer_request: failed to read queue")?
+                .ok_or(ContractError::NoRequestInQueue)?;
 
-           let response = self.handle_request(&request)?;
-           // Attach an action to the tx by:
-           client.action(Action::Reply(response.encode()));
+            let response = self.handle_request(&request)?;
+            // Attach an action to the tx by:
+            client.action(Action::Reply(response.encode()));
 
-           maybe_submit_tx(client, &self.attest_key, config.sender_key.as_ref())
-       }
-
+            maybe_submit_tx(client, &self.attest_key, config.sender_key.as_ref())
+        }
 
         /// Feed the data
         #[ink(message)]
@@ -368,16 +319,14 @@ mod graph_api_oracle {
 
             let result = match self.run_js_inner(&script, request, settings) {
                 Ok(output_value) => {
-                    let input_hash = self
-                        .env()
-                        .hash_bytes::<ink::env::hash::Sha2x256>(request);
+                    let input_hash = self.env().hash_bytes::<ink::env::hash::Sha2x256>(request);
                     ResponseMessage::JsResponse {
                         js_script_hash: code_hash,
                         input_hash,
                         settings_hash,
                         output_value,
                     }
-                },
+                }
                 Err(ContractError::JsError(s)) => ResponseMessage::Error {
                     js_script_hash: code_hash,
                     input_value: request.to_vec(),
@@ -413,6 +362,7 @@ mod graph_api_oracle {
 
             Ok(output_as_bytes)
         }
+
         /// Simulate the js
         ///
         /// For dev purpose. (admin only)
@@ -426,47 +376,7 @@ mod graph_api_oracle {
             self.ensure_owner()?;
             self.run_js_inner(&js_code, &request, settings)
         }
-/*
-        /// Simulate the js
-        ///
-        /// For dev purpose. (admin only)
-        #[ink(message)]
-        pub fn simulate_run_js_2(
-            &self,
-            js_code: String,
-            graph_api: String,
-            dapp_id: String,
-        ) -> Result<GraphApiResponseMessage> {
-            self.ensure_owner()?;
 
-            // build the request
-            let request = GraphApiRequestMessage {
-                graph_api,
-                dapp_id: dapp_id.to_string(),
-            };
-            info!("input: {:0x?}", request.encode());
-
-            let output = self.run_js_inner(&js_code, &request.encode(), "".to_string())?;
-            info!("output: {:0x?}", output);
-
-            let expected = GraphApiResponseMessage {
-                resp_type: 1,
-                dapp_id: dapp_id.to_string(),
-                response_value: Some(DappStats {
-                    total_stake: 6170980111660422740836352,
-                    nb_stakers: 45,
-                    developer_address: "ZEUr1PBaxshhhPcF4jeVFVoC6BwCDYj48UsJ5ShquWN2yeE"
-                        .to_string(),
-                }),
-                error: None,
-            };
-            info!("expected: {:0x?}", expected.encode());
-
-            let result = GraphApiResponseMessage::decode(&mut output.as_slice())
-                .map_err(|_| ContractError::FailedToDecode)?;
-            Ok(result)
-        }
- */
         /// Returns BadOrigin error if the caller is not the owner
         fn ensure_owner(&self) -> Result<()> {
             if self.env().caller() == self.owner {
