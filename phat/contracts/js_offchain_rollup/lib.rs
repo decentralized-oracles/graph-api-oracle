@@ -4,7 +4,7 @@ extern crate alloc;
 extern crate core;
 
 #[ink::contract(env = pink_extension::PinkEnvironment)]
-mod graph_api_oracle {
+mod js_offchain_rollup {
 
     use alloc::{string::String, string::ToString, vec::Vec};
     use ink::storage::Lazy;
@@ -42,7 +42,7 @@ mod graph_api_oracle {
     }
 
     #[ink(storage)]
-    pub struct GraphApiOracle {
+    pub struct JsOffchainRollup {
         owner: AccountId,
         /// config to send the data to the ink! smart contract
         config: Option<Config>,
@@ -111,7 +111,7 @@ mod graph_api_oracle {
         }
     }
 
-    impl GraphApiOracle {
+    impl JsOffchainRollup {
         #[ink(constructor)]
         pub fn default() -> Self {
             const NONCE: &[u8] = b"attest_key";
@@ -490,7 +490,7 @@ mod graph_api_oracle {
             let _ = env_logger::try_init();
             pink_extension_runtime::mock_ext::mock_all_ext();
 
-            let mut oracle = GraphApiOracle::default();
+            let mut oracle = JsOffchainRollup::default();
 
             // Secret key and address of Alice in localhost
             let sk_alice: [u8; 32] = [0x01; 32];
@@ -512,7 +512,7 @@ mod graph_api_oracle {
             assert_eq!(initial_attestor_address, attestor_address);
         }
 
-        fn init_contract() -> GraphApiOracle {
+        fn init_contract() -> JsOffchainRollup {
             let EnvVars {
                 rpc,
                 pallet_id,
@@ -522,7 +522,7 @@ mod graph_api_oracle {
                 sender_key,
             } = config();
 
-            let mut oracle = GraphApiOracle::default();
+            let mut oracle = JsOffchainRollup::default();
             oracle
                 .config_target_contract(rpc, pallet_id, call_id, contract_id.into(), sender_key)
                 .unwrap();

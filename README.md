@@ -17,17 +17,17 @@ The Phat Contract `GraphApiOracle` uses the crate phat_js to run the js code in 
 I use the `@phala/fn` CLI tool to generates the js code.
 
 
-## Phat Contract `GraphApiOracle`
+## Phat Contract `JsOffchainRollup`
 
 To deploy this Phat Contract you can build the contract or use existing artifacts
 
-More information here: [phat/contracts/graph_api_oracle/README.md](phat/contracts/graph_api_oracle/README.md)
+More information here: [phat/contracts/js_offchain_rollup/README.md](phat/contracts/js_offchain_rollup/README.md)
 
 ### Build the contract
 
 To build the contract:
 ```bash
-cd phat/contracts/graph_api_oracle
+cd phat/contracts/js_offchain_rollup
 cargo contract build
 ```
 

@@ -1,5 +1,5 @@
 [package]
-name = "graph_api_oracle"
+name = "js_offchain_rollup"
 version = "0.1.0"
 authors = ["GuiGou"]
 edition = "2021"
