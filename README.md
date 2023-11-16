@@ -11,7 +11,7 @@ The full documentation of this SDK can be found here: https://github.com/Phala-N
 
 The Phat Contract `GraphApiOracle` is implemented by the generic Phat Contract `JS Offchain Rollup` and a specific js script to in charge of :
  - format the data in input (graph api endpoint + data coming from Ink! Smart Contract by example)
- - query the graph indexer 
+ - query the graph indexer and do business logic
  - format the data in output 
 
 We use the `@phala/fn` CLI tool to generates the js code.
