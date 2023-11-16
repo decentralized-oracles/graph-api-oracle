@@ -6,7 +6,7 @@ pub mod graph_api_consumer {
     use ink::codegen::{EmitEvent, Env};
     use ink::prelude::string::{String, ToString};
     use ink::prelude::vec::Vec;
-    use ink::storage::{Lazy, Mapping};
+    use ink::storage::Mapping;
     use openbrush::contracts::access_control::*;
     use openbrush::contracts::ownable::*;
     use openbrush::traits::Storage;
@@ -14,26 +14,25 @@ pub mod graph_api_consumer {
     use scale::{Decode, Encode};
 
     use phat_rollup_anchor_ink::traits::{
-        meta_transaction, meta_transaction::*, rollup_anchor, rollup_anchor::*,
+        meta_transaction, meta_transaction::*,
+        rollup_anchor, rollup_anchor::*,
+        js_rollup_anchor, js_rollup_anchor::*,
     };
-
-    type CodeHash = [u8; 32];
-    pub const MANAGER_ROLE: RoleType = ink::selector_id!("MANAGER_ROLE");
 
     pub type DappId = String;
 
-    /// Events emitted when a value is requested
+    /// Events emitted when the stats are requested
     #[ink(event)]
-    pub struct ValueRequested {
+    pub struct StatsRequested {
         /// dApp id requested
         dapp_id: DappId,
         /// when the value has been requested
         timestamp: u64,
     }
 
-    /// Events emitted when a value is received
+    /// Events emitted when the stats are received
     #[ink(event)]
-    pub struct ValueReceived {
+    pub struct StatsReceived {
         /// dApp id requested
         dapp_id: DappId,
         /// stats
@@ -57,28 +56,13 @@ pub mod graph_api_consumer {
     #[derive(Encode, Decode, Debug)]
     #[cfg_attr(feature = "std", derive(scale_info::TypeInfo))]
     pub enum ContractError {
-        AccessControlError(AccessControlError),
         RollupAnchorError(RollupAnchorError),
-        MetaTransactionError(MetaTransactionError),
-        FailedToDecode,
     }
 
-    /// convertor from MessageQueueError to ContractError
-    impl From<AccessControlError> for ContractError {
-        fn from(error: AccessControlError) -> Self {
-            ContractError::AccessControlError(error)
-        }
-    }
     /// convertor from RollupAnchorError to ContractError
     impl From<RollupAnchorError> for ContractError {
         fn from(error: RollupAnchorError) -> Self {
             ContractError::RollupAnchorError(error)
-        }
-    }
-    /// convertor from MetaTxError to ContractError
-    impl From<MetaTransactionError> for ContractError {
-        fn from(error: MetaTransactionError) -> Self {
-            ContractError::MetaTransactionError(error)
         }
     }
 
@@ -119,36 +103,6 @@ pub mod graph_api_consumer {
         stats: DappStats,
     }
 
-    /// Message sent to provide the data
-    /// response pushed in the queue by the offchain rollup and read by the Ink! smart contract
-    #[derive(Encode, Decode)]
-    #[cfg_attr(
-        feature = "std",
-        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
-    )]
-    enum ResponseMessage {
-        JsResponse {
-            /// hash of js script executed to get the data
-            js_script_hash: CodeHash,
-            /// hash of data in input of js
-            input_hash: CodeHash,
-            /// hash of settings of js
-            settings_hash: CodeHash,
-            /// response value
-            output_value: Vec<u8>,
-        },
-        Error {
-            /// hash of js script
-            js_script_hash: CodeHash,
-            /// input in js
-            input_value: Vec<u8>,
-            /// hash of settings of js
-            settings_hash: CodeHash,
-            /// when an error occurs
-            error: Vec<u8>,
-        },
-    }
-
     /// Data storage
     #[derive(Encode, Decode, Default, Eq, PartialEq, Clone, Debug)]
     #[cfg_attr(
@@ -175,10 +129,8 @@ pub mod graph_api_consumer {
         rollup_anchor: rollup_anchor::Data,
         #[storage_field]
         meta_transaction: meta_transaction::Data,
-        /// hash of js script executed to query the data
-        js_script_hash: Lazy<CodeHash>,
-        /// hash of settings given in parameter to js runner
-        settings_hash: Lazy<CodeHash>,
+        #[storage_field]
+        js_rollup_anchor: js_rollup_anchor::Data,
         /// data linked to the dApps
         dapps_data: Mapping<DappId, DappData>,
     }
@@ -193,7 +145,7 @@ pub mod graph_api_consumer {
             // set the admin of this contract
             access_control::Internal::_init_with_admin(&mut instance, Some(caller));
             // grant the role manager
-            AccessControl::grant_role(&mut instance, MANAGER_ROLE, Some(caller))
+            AccessControl::grant_role(&mut instance, JS_RA_MANAGER_ROLE, Some(caller))
                 .expect("Should grant the role MANAGER_ROLE");
             instance
         }
@@ -227,7 +179,7 @@ pub mod graph_api_consumer {
             let message_id = self.push_message(&message)?;
 
             // emmit te event
-            self.env().emit_event(ValueRequested {
+            self.env().emit_event( StatsRequested {
                 dapp_id,
                 timestamp: self.env().block_timestamp(),
             });
@@ -236,7 +188,7 @@ pub mod graph_api_consumer {
         }
 
         #[ink(message)]
-        pub fn register_attestor(&mut self, account_id: AccountId) -> Result<(), ContractError> {
+        pub fn register_attestor(&mut self, account_id: AccountId) -> Result<(), AccessControlError> {
             AccessControl::grant_role(self, ATTESTOR_ROLE, Some(account_id))?;
             Ok(())
         }
@@ -248,47 +200,62 @@ pub mod graph_api_consumer {
 
         #[ink(message)]
         pub fn get_manager_role(&self) -> RoleType {
-            MANAGER_ROLE
-        }
-
-        #[ink(message)]
-        #[openbrush::modifiers(access_control::only_role(MANAGER_ROLE))]
-        pub fn set_js_script_hash(
-            &mut self,
-            js_script_hash: CodeHash,
-        ) -> Result<(), ContractError> {
-            self.js_script_hash.set(&js_script_hash);
-            Ok(())
-        }
-
-        #[ink(message)]
-        pub fn get_js_script_hash(&self) -> Option<CodeHash> {
-            self.js_script_hash.get()
-        }
-
-
-        #[ink(message)]
-        #[openbrush::modifiers(access_control::only_role(MANAGER_ROLE))]
-        pub fn set_settings_hash(
-            &mut self,
-            settings_hash: CodeHash,
-        ) -> Result<(), ContractError> {
-            self.settings_hash.set(&settings_hash);
-            Ok(())
-        }
-
-        #[ink(message)]
-        pub fn get_settings_hash(&self) -> Option<CodeHash> {
-            self.settings_hash.get()
+            JS_RA_MANAGER_ROLE
         }
 
     }
 
     impl RollupAnchor for GraphApiOracleClient {}
     impl MetaTransaction for GraphApiOracleClient {}
+    impl JsRollupAnchor for GraphApiOracleClient {}
 
     impl rollup_anchor::MessageHandler for GraphApiOracleClient {
         fn on_message_received(&mut self, action: Vec<u8>) -> Result<(), RollupAnchorError> {
+
+            let response = JsRollupAnchor::on_message_received::<GraphApiRequestMessage, GraphApiResponseMessage>(self, action)?;
+
+            let timestamp = self.env().block_timestamp();
+
+            match response {
+                MessageReceived::Ok {output} => {
+
+                    let dapp_id = output.dapp_id;
+                    let dapp_stats = output.stats;
+
+                    let dapp_data = DappData {
+                        dapp_id: dapp_id.to_string(),
+                        dapp_stats: DappStats {
+                            total_stake: dapp_stats.total_stake,
+                            nb_stakers: dapp_stats.nb_stakers,
+                            developer_address: dapp_stats.developer_address.to_string(),
+                        },
+                        last_update: timestamp,
+                    };
+
+                    // register the info
+                    self.dapps_data.insert(dapp_id.to_string(), &dapp_data);
+
+                    // emmit the event
+                    self.env().emit_event(StatsReceived {
+                        dapp_id,
+                        stats: DappStats {
+                            total_stake: dapp_stats.total_stake,
+                            nb_stakers: dapp_stats.nb_stakers,
+                            developer_address: dapp_stats.developer_address,
+                        },
+                        timestamp,
+                    });
+                }
+                MessageReceived::Error { error, input } => {
+                    // we received an error
+                    self.env().emit_event(ErrorReceived {
+                        dapp_id : input.dapp_id,
+                        error,
+                        timestamp,
+                    });
+                }
+            }
+/*
             // parse the response
             let response: ResponseMessage =
                 Decode::decode(&mut &action[..]).or(Err(RollupAnchorError::FailedToDecode))?;
@@ -325,33 +292,7 @@ pub mod graph_api_consumer {
                     // we received the data
                     let message = GraphApiResponseMessage::decode(&mut output_value.as_slice())
                         .map_err(|_| RollupAnchorError::FailedToDecode)?;
-
-                    let dapp_id = message.dapp_id;
-                    let dapp_stats = message.stats;
-
-                    let dapp_data = DappData {
-                        dapp_id: dapp_id.to_string(),
-                        dapp_stats: DappStats {
-                            total_stake: dapp_stats.total_stake,
-                            nb_stakers: dapp_stats.nb_stakers,
-                            developer_address: dapp_stats.developer_address.to_string(),
-                        },
-                        last_update: timestamp,
-                    };
-
-                    // register the info
-                    self.dapps_data.insert(dapp_id.to_string(), &dapp_data);
-
-                    // emmit the event
-                    self.env().emit_event(ValueReceived {
-                        dapp_id,
-                        stats: DappStats {
-                            total_stake: dapp_stats.total_stake,
-                            nb_stakers: dapp_stats.nb_stakers,
-                            developer_address: dapp_stats.developer_address,
-                        },
-                        timestamp,
-                    });
+v
                 }
                 ResponseMessage::Error { error, input_value, .. } => {
                     // we received an error
@@ -366,6 +307,8 @@ pub mod graph_api_consumer {
                     });
                 }
             }
+
+ */
 
             Ok(())
         }
@@ -416,8 +359,9 @@ pub mod graph_api_consumer {
         use phat_rollup_anchor_ink::traits::{
             meta_transaction::metatransaction_external::MetaTransaction,
             rollup_anchor::rollupanchor_external::RollupAnchor,
+            js_rollup_anchor::jsrollupanchor_external::JsRollupAnchor,
+            js_rollup_anchor::ResponseMessage::{Error, JsResponse},
         };
-        use crate::graph_api_consumer::ResponseMessage::{Error, JsResponse};
 
         type E2EResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
