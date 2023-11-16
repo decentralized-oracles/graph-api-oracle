@@ -9,12 +9,12 @@ You can find a demo here: TODO
 The Phat Contract and Ink! Smart Contract have been built with the Phat Offchain Rollup.
 The full documentation of this SDK can be found here: https://github.com/Phala-Network/phat-offchain-rollup
 
-The Phat Contract `GraphApiOracle` uses the crate phat_js to run the js code in charge of :
+The Phat Contract `GraphApiOracle` is implemented by the generic Phat contract `JS Offchain Rollup` and a specific js script to in charge of :
  - format the data in input (graph api endpoint + data coming from Ink! Smart Contract by example)
  - query the graph indexer 
  - format the data in output 
 
-It uses the `@phala/fn` CLI tool to generates the js code.
+We use the `@phala/fn` CLI tool to generates the js code.
 
 
 ## Phat Contract `GraphApiOracle`
