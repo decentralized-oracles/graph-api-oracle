@@ -66,6 +66,16 @@ function stringToHex(str: string): string {
 }
 
 function fetchDappStakingStats(graphApi: string, dappId: string): any {
+
+  let queryDappId;
+  if (dappId.length == 40){
+    queryDappId = "0x" + dappId;
+  } else {
+    queryDappId = dappId;
+  }
+
+
+
   let headers = {
     "Content-Type": "application/json",
     "User-Agent": "phat-contract",
@@ -75,7 +85,7 @@ function fetchDappStakingStats(graphApi: string, dappId: string): any {
                   dApps (
                     filter: {
                       id: {
-                        inInsensitive: [\"${dappId}\"]
+                        inInsensitive: [\"${queryDappId}\"]
                       }
                     }
                   ){
