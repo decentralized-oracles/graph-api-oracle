@@ -28,4 +28,4 @@ cargo test
 ## Run Integration tests
 
 Unfortunately, the cross contract call doesn't work in a local environment.
-It means the JS contract used to compute the random value can not been reached and the integration tests can not be run for the time being.  
+It means the JS contract used to query the graph api can not been reached and the integration tests can not be run for the time being.  
