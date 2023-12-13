@@ -255,60 +255,6 @@ pub mod graph_api_consumer {
                     });
                 }
             }
-/*
-            // parse the response
-            let response: ResponseMessage =
-                Decode::decode(&mut &action[..]).or(Err(RollupAnchorError::FailedToDecode))?;
-
-            let timestamp = self.env().block_timestamp();
-
-            match response {
-                ResponseMessage::JsResponse {
-                    js_script_hash,
-                    settings_hash,
-                    output_value ,
-                    ..
-                } => {
-                    // check the js code hash
-                    match self.js_script_hash.get() {
-                        Some(expected_js_hash) => {
-                            if js_script_hash != expected_js_hash {
-                                return Err(RollupAnchorError::ConditionNotMet); // improve the error
-                            }
-                        },
-                        None => {}
-                    }
-
-                    // check the settings hash
-                    match self.settings_hash.get() {
-                        Some(expected_settings_hash) => {
-                            if settings_hash != expected_settings_hash {
-                                return Err(RollupAnchorError::ConditionNotMet); // improve the error
-                            }
-                        },
-                        None => {}
-                    }
-
-                    // we received the data
-                    let message = GraphApiResponseMessage::decode(&mut output_value.as_slice())
-                        .map_err(|_| RollupAnchorError::FailedToDecode)?;
-v
-                }
-                ResponseMessage::Error { error, input_value, .. } => {
-                    // we received an error
-
-                    let input = GraphApiRequestMessage::decode(&mut input_value.as_slice())
-                        .map_err(|_| RollupAnchorError::FailedToDecode)?;
-
-                    self.env().emit_event(ErrorReceived {
-                        dapp_id : input.dapp_id,
-                        error: error,
-                        timestamp,
-                    });
-                }
-            }
-
- */
 
             Ok(())
         }
